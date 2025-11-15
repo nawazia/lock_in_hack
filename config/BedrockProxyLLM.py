@@ -14,8 +14,8 @@ class BedrockProxyLLM(LLM, BaseModel):
     
     # 1. Define Model Parameters
     team_id: str = Field(default_factory=lambda: os.getenv("TEAM_ID"))
-    api_token: str = Field(default_factory=lambda: os.getenv("AWS_API_KEY"))
-    api_endpoint: str = "https://ctwa92wg1b.execute-api.us-east-1.amazonaws.com/prod/invoke"
+    api_token: str = Field(default_factory=lambda: os.getenv("API_TOKEN"))
+    api_endpoint: str = Field(default_factory=lambda: os.getenv("API_ENDPOINT", "https://ctwa92wg1b.execute-api.us-east-1.amazonaws.com/prod/invoke"))
     model_name: str = "us.anthropic.claude-3-5-sonnet-20241022-v2:0" #
     max_tokens: int = 1024 #
 

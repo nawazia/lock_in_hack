@@ -60,6 +60,13 @@ verify_*.py
 
 # Logs
 *.log
+logs/
+
+# Vector store and storage
+storage/
+chroma_db/
+*.db
+*.sqlite3
 
 # LangSmith
 .langsmith/
