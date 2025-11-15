@@ -12,6 +12,7 @@ def get_llm_openai():
         temperature=0.2,
     )
 
+<<<<<<< HEAD
 def get_llm_bedrock():
     """Get AWS Bedrock LLM (requires TEAM_ID and API_TOKEN in .env)."""
     from config.BedrockProxyLLM import BedrockProxyLLM
@@ -32,3 +33,14 @@ def get_llm(provider: str = None):
         return get_llm_bedrock()
     else:  # default to openai
         return get_llm_openai()
+=======
+def get_llm_openrouter():
+    return ChatOpenAI(
+        model="anthropic/claude-3.5-sonnet",  # OpenRouter model slug
+        api_key=os.getenv("OPENROUTER_API_KEY"),
+        base_url="https://openrouter.ai/api/v1",
+        temperature=0.2,
+    )
+
+
+>>>>>>> c8f5e96 (something was missing)
