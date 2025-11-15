@@ -27,6 +27,13 @@ load_dotenv()
 # Setup logging
 logger = setup_logger(level=os.getenv("LOG_LEVEL", "INFO"))
 
+# Initialize LangSmith tracing
+if os.getenv("LANGCHAIN_TRACING_V2") == "true":
+    logger.info(f"LangSmith tracing enabled - Project: {os.getenv('LANGCHAIN_PROJECT', 'lock-in-hack-multi-agent')}")
+    logger.info("View traces at: https://smith.langchain.com")
+else:
+    logger.info("LangSmith tracing is disabled. Set LANGCHAIN_TRACING_V2=true in .env to enable")
+
 
 def main():
     """Main execution function."""

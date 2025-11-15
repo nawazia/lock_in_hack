@@ -1,18 +1,25 @@
 """RAG Agent - Manages retrieval and storage of news articles using vector store."""
+
 import logging
 import os
-from typing import List, Optional
 from pathlib import Path
+from typing import List, Optional
 
+from dotenv import load_dotenv
 from langchain_community.vectorstores import Chroma
 from langchain_openai import OpenAIEmbeddings
+from langsmith import traceable
+
 try:
     from langchain_text_splitters import RecursiveCharacterTextSplitter
 except ImportError:
     from langchain.text_splitter import RecursiveCharacterTextSplitter
+
 from langchain_core.documents import Document
 
-from models.schemas import NewsArticle, AgentState
+from models.schemas import AgentState, NewsArticle
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +31,7 @@ class RAGAgent:
         self,
         persist_directory: Optional[str] = None,
         embedding_model: Optional[OpenAIEmbeddings] = None,
-        collection_name: str = "news_articles"
+        collection_name: str = "news_articles",
     ):
         """Initialize the RAG agent.
 
@@ -35,16 +42,16 @@ class RAGAgent:
         """
         if persist_directory is None:
             persist_directory = os.path.join(
-                os.path.dirname(os.path.dirname(__file__)),
-                "storage",
-                "chroma_db"
+                os.path.dirname(os.path.dirname(__file__)), "storage", "chroma_db"
             )
 
         self.persist_directory = persist_directory
         Path(self.persist_directory).mkdir(parents=True, exist_ok=True)
 
         self.embeddings = embedding_model or OpenAIEmbeddings(
-            model="text-embedding-3-small"
+            model="openai/text-embedding-3-small",
+            api_key=os.getenv("OPENROUTER_API_KEY"),
+            base_url="https://openrouter.ai/api/v1",
         )
 
         self.collection_name = collection_name
@@ -61,7 +68,7 @@ class RAGAgent:
             vectorstore = Chroma(
                 collection_name=self.collection_name,
                 embedding_function=self.embeddings,
-                persist_directory=self.persist_directory
+                persist_directory=self.persist_directory,
             )
             logger.info(f"Vector store initialized at {self.persist_directory}")
             return vectorstore
@@ -69,6 +76,7 @@ class RAGAgent:
             logger.error(f"Error initializing vector store: {e}")
             raise
 
+    @traceable(name="rag_store_articles")
     def store_articles(self, articles: List[NewsArticle]) -> int:
         """Store news articles in the vector store.
 
@@ -97,7 +105,7 @@ class RAGAgent:
                 # Create document with content
                 doc = Document(
                     page_content=f"Title: {article.title}\n\n{article.content}",
-                    metadata=metadata
+                    metadata=metadata,
                 )
                 documents.append(doc)
 
@@ -114,11 +122,9 @@ class RAGAgent:
             logger.error(f"Error storing articles: {e}")
             return 0
 
+    @traceable(name="rag_retrieve_articles")
     def retrieve_articles(
-        self,
-        query: str,
-        k: int = 5,
-        filter_dict: Optional[dict] = None
+        self, query: str, k: int = 5, filter_dict: Optional[dict] = None
     ) -> List[NewsArticle]:
         """Retrieve relevant articles from the vector store.
 
@@ -136,9 +142,7 @@ class RAGAgent:
             # Perform similarity search
             if filter_dict:
                 docs = self.vectorstore.similarity_search(
-                    query,
-                    k=k,
-                    filter=filter_dict
+                    query, k=k, filter=filter_dict
                 )
             else:
                 docs = self.vectorstore.similarity_search(query, k=k)
@@ -147,14 +151,16 @@ class RAGAgent:
             articles = []
             for doc in docs:
                 metadata = doc.metadata
-                articles.append(NewsArticle(
-                    title=metadata.get("title", "Unknown"),
-                    url=metadata.get("url", ""),
-                    content=doc.page_content,
-                    source=metadata.get("source", "rag"),
-                    query=query,
-                    relevance_score=None  # Could add similarity score here
-                ))
+                articles.append(
+                    NewsArticle(
+                        title=metadata.get("title", "Unknown"),
+                        url=metadata.get("url", ""),
+                        content=doc.page_content,
+                        source=metadata.get("source", "rag"),
+                        query=query,
+                        relevance_score=None,  # Could add similarity score here
+                    )
+                )
 
             logger.info(f"Retrieved {len(articles)} articles from RAG")
             return articles
@@ -164,9 +170,7 @@ class RAGAgent:
             return []
 
     def retrieve_with_scores(
-        self,
-        query: str,
-        k: int = 5
+        self, query: str, k: int = 5
     ) -> List[tuple[NewsArticle, float]]:
         """Retrieve articles with relevance scores.
 
@@ -189,7 +193,7 @@ class RAGAgent:
                     content=doc.page_content,
                     source=metadata.get("source", "rag"),
                     query=query,
-                    relevance_score=float(score)
+                    relevance_score=float(score),
                 )
                 results.append((article, score))
 
@@ -207,12 +211,13 @@ class RAGAgent:
             return {
                 "total_documents": count,
                 "collection_name": self.collection_name,
-                "persist_directory": self.persist_directory
+                "persist_directory": self.persist_directory,
             }
         except Exception as e:
             logger.error(f"Error getting stats: {e}")
             return {}
 
+    @traceable(name="rag_agent_run")
     def run(self, state: AgentState) -> AgentState:
         """Run the RAG agent as part of the orchestrated workflow.
 

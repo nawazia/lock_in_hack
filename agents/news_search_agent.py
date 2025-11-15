@@ -1,10 +1,13 @@
 """News Search Agent - Searches for news using Valyu."""
-import logging
-from typing import List, Dict, Any
 
-from tools.agent_tools import valyu_search_tool
-from models.schemas import NewsArticle, AgentState
+import logging
+from typing import Any, Dict, List
+
+from langsmith import traceable
+
 from config.llm_setup import get_llm_openai
+from models.schemas import AgentState, NewsArticle
+from tools.agent_tools import valyu_search_tool
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +24,7 @@ class NewsSearchAgent:
         self.llm = llm or get_llm_openai()
         self.search_tool = valyu_search_tool
 
+    @traceable(name="news_search")
     def search(self, query: str) -> List[NewsArticle]:
         """Search for news articles based on query.
 
@@ -32,7 +36,6 @@ class NewsSearchAgent:
         """
         try:
             logger.info(f"Searching for news: {query}")
-
             # Directly invoke the search tool
             result = self.search_tool.invoke(query)
 
@@ -59,7 +62,7 @@ class NewsSearchAgent:
 
         # Simple parsing - looks for Result N: patterns
         # This could be made more robust with regex or structured output
-        lines = output.split('\n')
+        lines = output.split("\n")
         current_article = {}
 
         for line in lines:
@@ -67,32 +70,39 @@ class NewsSearchAgent:
             if line.startswith("Result "):
                 if current_article:
                     # Save previous article
-                    if 'title' in current_article:
-                        articles.append(NewsArticle(
-                            title=current_article.get('title', 'Unknown'),
-                            url=current_article.get('url', ''),
-                            content=current_article.get('content', ''),
-                            query=query
-                        ))
+                    if "title" in current_article:
+                        articles.append(
+                            NewsArticle(
+                                title=current_article.get("title", "Unknown"),
+                                url=current_article.get("url", ""),
+                                content=current_article.get("content", ""),
+                                query=query,
+                            )
+                        )
                 current_article = {}
             elif line.startswith("Title:"):
-                current_article['title'] = line.replace("Title:", "").strip()
+                current_article["title"] = line.replace("Title:", "").strip()
             elif line.startswith("URL:"):
-                current_article['url'] = line.replace("URL:", "").strip()
+                current_article["url"] = line.replace("URL:", "").strip()
             elif line.startswith("Content snippet:"):
-                current_article['content'] = line.replace("Content snippet:", "").strip()
+                current_article["content"] = line.replace(
+                    "Content snippet:", ""
+                ).strip()
 
         # Don't forget the last article
-        if current_article and 'title' in current_article:
-            articles.append(NewsArticle(
-                title=current_article.get('title', 'Unknown'),
-                url=current_article.get('url', ''),
-                content=current_article.get('content', ''),
-                query=query
-            ))
+        if current_article and "title" in current_article:
+            articles.append(
+                NewsArticle(
+                    title=current_article.get("title", "Unknown"),
+                    url=current_article.get("url", ""),
+                    content=current_article.get("content", ""),
+                    query=query,
+                )
+            )
 
         return articles
 
+    @traceable(name="news_search_agent_run")
     def run(self, state: AgentState) -> AgentState:
         """Run the news search agent as part of the orchestrated workflow.
 

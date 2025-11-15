@@ -25,6 +25,11 @@ requests>=2.31.0
 
 # Logging and monitoring (optional but recommended)
 loguru>=0.7.0
+langsmith>=0.1.0
+
+# Web API
+flask>=3.0.0
+flask-cors>=4.0.0
 
 # Type hints
 typing-extensions>=4.5.0

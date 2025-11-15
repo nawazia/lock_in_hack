@@ -25,6 +25,9 @@ class NewsArticle(BaseModel):
                 "query": "latest tech news"
             }
         }
+        json_encoders = {
+            datetime: lambda v: v.isoformat()
+        }
 
 
 class AgentState(BaseModel):

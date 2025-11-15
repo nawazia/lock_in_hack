@@ -1,15 +1,17 @@
-from langchain.tools import tool
-from valyu import Valyu
 import os
-from dotenv import load_dotenv
 from typing import Annotated
+
+from dotenv import load_dotenv
+from langchain.tools import tool
+from langsmith import traceable
+from valyu import Valyu
 
 load_dotenv()
 
+
 @tool
-def valyu_search_tool(
-    query: Annotated[str, "Search query to run on Valyu"]
-) -> str:
+@traceable(name="valyu_search_tool", run_type="tool")
+def valyu_search_tool(query: Annotated[str, "Search query to run on Valyu"]) -> str:
     """
     Search Valyu for relevant information about the query.
     Returns a concise text summary of the top results.
@@ -41,9 +43,7 @@ def valyu_search_tool(
 
 
 @tool
-def search_docs(
-    query: Annotated[str, "What you want to look up"]
-) -> str:
+def search_docs(query: Annotated[str, "What you want to look up"]) -> str:
     """Dummy search over some docs. Replace with real logic."""
     # For now, just fake it:
     return f"Results for '{query}': nothing real here yet."

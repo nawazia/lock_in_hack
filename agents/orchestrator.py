@@ -1,12 +1,14 @@
 """Orchestrator Agent - Coordinates all agents using LangGraph."""
+
 import logging
-from typing import TypedDict, List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 
-from langgraph.graph import StateGraph, END
+from langsmith import traceable
+from langgraph.graph import END, StateGraph
 
+from agents.analysis_agent import AnalysisAgent
 from agents.news_search_agent import NewsSearchAgent
 from agents.rag_agent import RAGAgent
-from agents.analysis_agent import AnalysisAgent
 from agents.summary_agent import SummaryAgent
 from config.llm_setup import get_llm_openai
 
@@ -16,6 +18,7 @@ logger = logging.getLogger(__name__)
 # Define the state schema for LangGraph
 class GraphState(TypedDict):
     """State for the LangGraph workflow."""
+
     user_query: str
     search_results: List[Any]
     rag_results: List[Any]
@@ -78,45 +81,56 @@ class OrchestratorAgent:
         app = workflow.compile()
         return app
 
+    @traceable(name="search_node")
     def _search_node(self, state: Dict) -> Dict:
         """Node for news search agent."""
         logger.info("Running news search agent...")
         try:
             # Convert dict to AgentState for the agent
             from models.schemas import AgentState
+
+            print("running agent state for search")
             agent_state = AgentState(**state)
             agent_state = self.news_search_agent.run(agent_state)
 
             # Convert back to dict
             state["search_results"] = agent_state.search_results
             state["completed_agents"] = agent_state.completed_agents
-            logger.info(f"Search complete: {len(state['search_results'])} articles found")
+            logger.info(
+                f"Search complete: {len(state['search_results'])} articles found"
+            )
         except Exception as e:
             logger.error(f"Error in search node: {e}")
             state["metadata"]["search_error"] = str(e)
         return state
 
+    @traceable(name="rag_node")
     def _rag_node(self, state: Dict) -> Dict:
         """Node for RAG agent."""
         logger.info("Running RAG agent...")
         try:
             from models.schemas import AgentState
+
             agent_state = AgentState(**state)
             agent_state = self.rag_agent.run(agent_state)
 
             state["rag_results"] = agent_state.rag_results
             state["completed_agents"] = agent_state.completed_agents
-            logger.info(f"RAG complete: {len(state['rag_results'])} historical articles retrieved")
+            logger.info(
+                f"RAG complete: {len(state['rag_results'])} historical articles retrieved"
+            )
         except Exception as e:
             logger.error(f"Error in RAG node: {e}")
             state["metadata"]["rag_error"] = str(e)
         return state
 
+    @traceable(name="analysis_node")
     def _analysis_node(self, state: Dict) -> Dict:
         """Node for analysis agent."""
         logger.info("Running analysis agent...")
         try:
             from models.schemas import AgentState
+
             agent_state = AgentState(**state)
             agent_state = self.analysis_agent.run(agent_state)
 
@@ -129,11 +143,13 @@ class OrchestratorAgent:
             state["metadata"]["analysis_error"] = str(e)
         return state
 
+    @traceable(name="summary_node")
     def _summary_node(self, state: Dict) -> Dict:
         """Node for summary agent."""
         logger.info("Running summary agent...")
         try:
             from models.schemas import AgentState
+
             agent_state = AgentState(**state)
             agent_state = self.summary_agent.run(agent_state)
 
@@ -145,6 +161,7 @@ class OrchestratorAgent:
             state["metadata"]["summary_error"] = str(e)
         return state
 
+    @traceable(name="process_query", run_type="chain")
     def process_query(self, query: str) -> dict:
         """Process a user query through the multi-agent system.
 
@@ -165,7 +182,7 @@ class OrchestratorAgent:
             "summary": None,
             "next_agent": None,
             "completed_agents": [],
-            "metadata": {}
+            "metadata": {},
         }
 
         # Run the graph
@@ -217,7 +234,7 @@ class OrchestratorAgent:
             png_data = self.graph.get_graph().draw_mermaid_png()
 
             # Save to file
-            with open(output_path, 'wb') as f:
+            with open(output_path, "wb") as f:
                 f.write(png_data)
 
             logger.info(f"Graph visualization saved to: {output_path}")
@@ -226,13 +243,16 @@ class OrchestratorAgent:
             # Also try to display if in Jupyter
             try:
                 from IPython.display import Image, display
+
                 display(Image(png_data))
             except:
                 pass
 
         except Exception as e:
             logger.warning(f"Could not visualize graph: {e}")
-            logger.info("Graph visualization requires graphviz. Install with: brew install graphviz (macOS) or apt-get install graphviz (Linux)")
+            logger.info(
+                "Graph visualization requires graphviz. Install with: brew install graphviz (macOS) or apt-get install graphviz (Linux)"
+            )
 
 
 def build_agent(llm=None):
