@@ -11,6 +11,7 @@ import 'reactflow/dist/style.css';
 import CustomNode from './CustomNode';
 import NodeSidebar from './NodeSidebar';
 import StatsPanel from './StatsPanel';
+import ChatPanel from './ChatPanel';
 import { fetchTraceDetails, fetchTraceRuns } from '../services/api';
 import { processTraceData, getTraceStats } from '../utils/traceProcessor';
 
@@ -27,6 +28,8 @@ const TraceVisualizer = () => {
   const [error, setError] = useState(null);
   const [availableTraces, setAvailableTraces] = useState([]);
   const [selectedTraceId, setSelectedTraceId] = useState(null);
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [runMap, setRunMap] = useState(new Map());
 
   // Load available traces on mount
   useEffect(() => {
@@ -64,9 +67,10 @@ const TraceVisualizer = () => {
       const response = await fetchTraceDetails(traceId);
 
       if (response.success && response.trace) {
-        const { nodes: processedNodes, edges: processedEdges } = processTraceData(response.trace);
+        const { nodes: processedNodes, edges: processedEdges, runMap: processedRunMap } = processTraceData(response.trace);
         setNodes(processedNodes);
         setEdges(processedEdges);
+        setRunMap(processedRunMap);
         setTraceStats(getTraceStats(response.trace));
       } else {
         setError(response.error || 'Failed to load trace data');
@@ -119,13 +123,37 @@ const TraceVisualizer = () => {
         alignItems: 'center',
         boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
       }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: '24px', fontWeight: 'bold' }}>
-            🔍 LangSmith Trace Visualizer
-          </h1>
-          <p style={{ margin: '4px 0 0 0', fontSize: '12px', opacity: 0.8 }}>
-            Interactive trace graph with detailed node inspection
-          </p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+          {/* Chat Button */}
+          <button
+            onClick={() => setIsChatOpen(!isChatOpen)}
+            style={{
+              padding: '10px',
+              backgroundColor: isChatOpen ? '#3B82F6' : '#374151',
+              color: 'white',
+              border: 'none',
+              borderRadius: '8px',
+              cursor: 'pointer',
+              fontSize: '20px',
+              lineHeight: '1',
+              transition: 'background-color 0.2s',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}
+            title="Open Trace Assistant"
+          >
+            💬
+          </button>
+
+          <div>
+            <h1 style={{ margin: 0, fontSize: '24px', fontWeight: 'bold' }}>
+              🔍 LangSmith Trace Visualizer
+            </h1>
+            <p style={{ margin: '4px 0 0 0', fontSize: '12px', opacity: 0.8 }}>
+              Interactive trace graph with detailed node inspection
+            </p>
+          </div>
         </div>
 
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
@@ -250,6 +278,14 @@ const TraceVisualizer = () => {
           onClose={() => setSelectedNode(null)}
         />
       )}
+
+      {/* Chat Panel */}
+      <ChatPanel
+        isOpen={isChatOpen}
+        onClose={() => setIsChatOpen(false)}
+        nodes={nodes}
+        runMap={runMap}
+      />
 
       {/* Legend */}
       <div style={{
