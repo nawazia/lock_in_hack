@@ -2,14 +2,17 @@
 
 import logging
 import json
+import os
 import re
-from typing import List
+from typing import List, Optional
 from datetime import datetime
 from langsmith import traceable
 from langchain_core.prompts import ChatPromptTemplate
 
 from config.llm_setup import get_llm
+from config.hallbayes_validator import EDFLValidator
 from models.travel_schemas import TravelPlanningState, Activity
+from models.observability_schemas import EvidenceData, ExtractionData, HallucinationMetrics
 from tools.travel_tools import search_activities
 
 logger = logging.getLogger(__name__)
@@ -18,14 +21,29 @@ logger = logging.getLogger(__name__)
 class ActivitiesAgent:
     """Agent responsible for finding and recommending activities."""
 
-    def __init__(self, llm=None):
+    def __init__(self, llm=None, enable_edfl_validation=None):
         """Initialize the activities agent.
 
         Args:
             llm: Language model to use. If None, uses default from config.
+            enable_edfl_validation: Enable EDFL validation. If None, reads from env ENABLE_EDFL_VALIDATION.
         """
         self.llm = llm or get_llm()
         self.search_tool = search_activities
+
+        # Initialize EDFL validator
+        if enable_edfl_validation is None:
+            enable_edfl_validation = os.getenv("ENABLE_EDFL_VALIDATION", "true").lower() == "true"
+
+        try:
+            self.edfl_validator = EDFLValidator(
+                self.llm,
+                h_star=0.05,  # Target 5% hallucination rate
+                enable_validation=enable_edfl_validation
+            )
+        except Exception as e:
+            logger.warning(f"Failed to initialize EDFL validator: {e}")
+            self.edfl_validator = None
 
     def _calculate_trip_days(self, timeframe: str) -> int:
         """Calculate the number of days in the trip from timeframe string.
@@ -73,7 +91,8 @@ class ActivitiesAgent:
         self,
         location: str,
         interests: List[str] = None,
-        category: str = ""
+        category: str = "",
+        collector: Optional[any] = None
     ) -> List[Activity]:
         """Search for activities and parse results into Activity objects.
 
@@ -113,7 +132,7 @@ class ActivitiesAgent:
                 return []
 
             # Use LLM to parse the search results into structured Activity objects
-            activities = self._parse_with_llm(raw_results, location, interests or [])
+            activities = self._parse_with_llm(raw_results, location, interests or [], collector=collector)
 
             logger.info(f"Found and parsed {len(activities)} activities")
             return activities
@@ -126,7 +145,8 @@ class ActivitiesAgent:
         self,
         search_results: List[dict],
         location: str,
-        interests: List[str]
+        interests: List[str],
+        collector: Optional[any] = None
     ) -> List[Activity]:
         """Use LLM to parse Valyu search results into Activity objects.
 
@@ -213,10 +233,133 @@ Extract activity information as JSON array.""")
                     logger.warning(f"Could not create Activity object: {e}")
                     continue
 
+            # Validate extracted activities with EDFL
+            edfl_metrics = None
+            if self.edfl_validator and activities:
+                try:
+                    should_use, risk_bound, rationale, valid_count = self.edfl_validator.validate_extraction_batch(
+                        task_description="Extract activity information from search results. Verify all names, prices, categories, and descriptions are accurately extracted.",
+                        evidence=formatted_results,
+                        extracted_items=activities,
+                        item_type="activities"
+                    )
+
+                    # Store EDFL metrics for each activity
+                    edfl_metrics = {
+                        "edfl_decision": "PASS" if should_use else "FAIL",
+                        "edfl_risk_bound": risk_bound,
+                        "edfl_valid_count": valid_count,
+                        "edfl_total_count": len(activities),
+                        "edfl_rationale": rationale[:200]  # Truncate for readability
+                    }
+
+                    # Add EDFL metadata to each activity
+                    for activity in activities:
+                        activity.edfl_validation = {
+                            "risk_of_hallucination": risk_bound,
+                            "validation_passed": should_use,
+                            "confidence": "high" if risk_bound < 0.05 else ("medium" if risk_bound < 0.5 else "low")
+                        }
+
+                    if not should_use:
+                        logger.warning(f"EDFL validation FLAGGED activities (RoH={risk_bound:.3f}) - returning anyway")
+                        logger.warning(f"Rationale: {rationale}")
+                        # Note: We flag but don't block - EDFL is for monitoring/confidence, not hard rejection
+                    else:
+                        logger.info(f"EDFL validation PASSED for {valid_count} activities (RoH={risk_bound:.3f})")
+
+                except Exception as e:
+                    logger.error(f"EDFL validation error (continuing anyway): {e}")
+                    edfl_metrics = {
+                        "edfl_decision": "ERROR",
+                        "edfl_error": str(e)
+                    }
+
+            # Store EDFL metrics for later retrieval
+            if edfl_metrics:
+                self._last_edfl_metrics = edfl_metrics
+
+            # Record observability data if collector is provided
+            if collector:
+                try:
+                    # Build EvidenceData
+                    evidence_data = EvidenceData(
+                        search_query=f"Activities in {location} for interests: {', '.join(interests)}",
+                        raw_results_count=len(search_results),
+                        raw_results=search_results[:5],  # Include top 5
+                        formatted_evidence=formatted_results,
+                        evidence_length=len(formatted_results)
+                    )
+
+                    # Build ExtractionData
+                    extraction_data = ExtractionData(
+                        extracted_items=[a.model_dump() for a in activities],
+                        item_count=len(activities),
+                        extraction_prompt=str(formatted_prompt[0].content[:500]) if formatted_prompt else None,
+                        llm_output_raw=content[:1000] if 'content' in locals() else None
+                    )
+
+                    # Build HallucinationMetrics if EDFL ran
+                    hallucination_metrics = None
+                    if edfl_metrics and edfl_metrics.get("edfl_decision") != "ERROR":
+                        # Get detailed metrics from validator if available
+                        detailed_metrics = getattr(self.edfl_validator, '_last_detailed_metrics', None)
+
+                        if detailed_metrics:
+                            hallucination_metrics = HallucinationMetrics(
+                                validation_type="evidence_based",
+                                edfl_decision=edfl_metrics["edfl_decision"],
+                                risk_of_hallucination=edfl_metrics["edfl_risk_bound"],
+                                confidence="high" if edfl_metrics["edfl_risk_bound"] < 0.05 else (
+                                    "medium" if edfl_metrics["edfl_risk_bound"] < 0.5 else "low"
+                                ),
+                                delta_bar=detailed_metrics.get("delta_bar", 0.0),
+                                isr=detailed_metrics.get("isr", 0.0),
+                                b2t=detailed_metrics.get("b2t", 0.0),
+                                p_answer=detailed_metrics.get("p_answer", 0.0),
+                                q_avg=detailed_metrics.get("q_avg", 0.0),
+                                q_lo=detailed_metrics.get("q_lo", 0.0),
+                                n_samples=detailed_metrics.get("n_samples", 5),
+                                m_skeletons=detailed_metrics.get("m_skeletons", 4),
+                                rationale=edfl_metrics.get("edfl_rationale", "")
+                            )
+
+                    # Record the step
+                    collector.record_step(
+                        step_name="activities_search",
+                        step_type="extraction",
+                        evidence=evidence_data,
+                        extraction=extraction_data,
+                        hallucination_metrics=hallucination_metrics,
+                        status="success" if activities else "warning",
+                        metadata={
+                            "location": location,
+                            "interests": interests,
+                            "activities_extracted": len(activities)
+                        }
+                    )
+                    logger.info(f"Recorded observability data for activities search: {len(activities)} activities")
+
+                except Exception as e:
+                    logger.warning(f"Failed to record observability data: {e}")
+
             return activities
 
         except Exception as e:
             logger.error(f"Error parsing activities with LLM: {e}")
+
+            # Record error in observability if collector provided
+            if collector:
+                try:
+                    collector.record_step(
+                        step_name="activities_search",
+                        step_type="extraction",
+                        status="failed",
+                        error_message=str(e)
+                    )
+                except:
+                    pass
+
             return []
 
     @traceable(name="activities_agent_run")
@@ -238,6 +381,9 @@ Extract activity information as JSON array.""")
             return state
 
         intent = state.travel_intent
+
+        # Get observability collector from state metadata
+        collector = state.metadata.get("observability_collector", None)
 
         # Calculate number of days from timeframe
         num_days = 3  # default
@@ -268,7 +414,8 @@ Extract activity information as JSON array.""")
                 specific_results = self.search_and_parse_activities(
                     location=location,
                     interests=[specific_activity],
-                    category=""
+                    category="",
+                    collector=collector
                 )
                 # Add only unique activities
                 for activity in specific_results:
@@ -298,7 +445,8 @@ Extract activity information as JSON array.""")
                 activities = self.search_and_parse_activities(
                     location=location,
                     interests=interest_combo,
-                    category=""
+                    category="",
+                    collector=collector
                 )
 
                 # Add unique activities
@@ -322,9 +470,19 @@ Extract activity information as JSON array.""")
         state.metadata["user_suggested_activities"] = user_suggested_count
         state.metadata["auto_recommended_activities"] = len(final_activities) - user_suggested_count
 
-        logger.info(
-            f"Activities agent completed. Found {len(final_activities)} activities "
-            f"(target: {target_activities})"
-        )
+        # Add EDFL validation metrics to state metadata
+        if hasattr(self, '_last_edfl_metrics') and self._last_edfl_metrics:
+            state.metadata["activities_edfl_validation"] = self._last_edfl_metrics
+            logger.info(
+                f"Activities agent completed. Found {len(final_activities)} activities "
+                f"(target: {target_activities}). "
+                f"EDFL: {self._last_edfl_metrics.get('edfl_decision', 'N/A')} "
+                f"(RoH={self._last_edfl_metrics.get('edfl_risk_bound', 'N/A')})"
+            )
+        else:
+            logger.info(
+                f"Activities agent completed. Found {len(final_activities)} activities "
+                f"(target: {target_activities})"
+            )
 
         return state

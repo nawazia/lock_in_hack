@@ -3,7 +3,7 @@
 import logging
 import json
 import os
-from typing import List
+from typing import List, Optional
 from datetime import datetime, timedelta
 from langsmith import traceable
 from langchain_core.prompts import ChatPromptTemplate
@@ -11,6 +11,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from config.llm_setup import get_llm
 from config.hallbayes_validator import EDFLValidator
 from models.travel_schemas import TravelPlanningState, Hotel
+from models.observability_schemas import EvidenceData, ExtractionData, HallucinationMetrics
 from tools.travel_tools import search_hotels
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,8 @@ class HotelAgent:
         check_in: str,
         check_out: str,
         guests: int = 1,
-        preferences: str = ""
+        preferences: str = "",
+        collector: Optional[any] = None
     ) -> List[Hotel]:
         """Search for hotels and parse results into Hotel objects.
 
@@ -90,7 +92,7 @@ class HotelAgent:
                 return []
 
             # Use LLM to parse the search results into structured Hotel objects
-            hotels = self._parse_with_llm(raw_results, location, preferences)
+            hotels = self._parse_with_llm(raw_results, location, preferences, collector=collector)
 
             logger.info(f"Found and parsed {len(hotels)} hotel options")
             return hotels
@@ -103,7 +105,8 @@ class HotelAgent:
         self,
         search_results: List[dict],
         location: str,
-        preferences: str = ""
+        preferences: str = "",
+        collector: Optional[any] = None
     ) -> List[Hotel]:
         """Use LLM to parse Valyu search results into Hotel objects.
 
@@ -273,10 +276,87 @@ Extract hotel information as JSON array.""")
             if edfl_metrics:
                 self._last_edfl_metrics = edfl_metrics
 
+            # Record observability data if collector is provided
+            if collector:
+                try:
+                    # Build EvidenceData
+                    evidence_data = EvidenceData(
+                        search_query=f"Hotels in {location}",
+                        raw_results_count=len(search_results),
+                        raw_results=search_results[:10],  # Include top 10
+                        formatted_evidence=formatted_results,
+                        evidence_length=len(formatted_results)
+                    )
+
+                    # Build ExtractionData
+                    extraction_data = ExtractionData(
+                        extracted_items=[h.model_dump() for h in hotels],
+                        item_count=len(hotels),
+                        extraction_prompt=str(formatted_prompt[0].content[:500]) if formatted_prompt else None,
+                        llm_output_raw=content[:1000] if 'content' in locals() else None
+                    )
+
+                    # Build HallucinationMetrics if EDFL ran
+                    hallucination_metrics = None
+                    if edfl_metrics and edfl_metrics.get("edfl_decision") != "ERROR":
+                        # Get detailed metrics from validator if available
+                        detailed_metrics = getattr(self.edfl_validator, '_last_detailed_metrics', None)
+
+                        if detailed_metrics:
+                            hallucination_metrics = HallucinationMetrics(
+                                validation_type="evidence_based",
+                                edfl_decision=edfl_metrics["edfl_decision"],
+                                risk_of_hallucination=edfl_metrics["edfl_risk_bound"],
+                                confidence="high" if edfl_metrics["edfl_risk_bound"] < 0.05 else (
+                                    "medium" if edfl_metrics["edfl_risk_bound"] < 0.5 else "low"
+                                ),
+                                delta_bar=detailed_metrics.get("delta_bar", 0.0),
+                                isr=detailed_metrics.get("isr", 0.0),
+                                b2t=detailed_metrics.get("b2t", 0.0),
+                                p_answer=detailed_metrics.get("p_answer", 0.0),
+                                q_avg=detailed_metrics.get("q_avg", 0.0),
+                                q_lo=detailed_metrics.get("q_lo", 0.0),
+                                n_samples=detailed_metrics.get("n_samples", 5),
+                                m_skeletons=detailed_metrics.get("m_skeletons", 4),
+                                rationale=edfl_metrics.get("edfl_rationale", "")
+                            )
+
+                    # Record the step
+                    collector.record_step(
+                        step_name="hotel_search",
+                        step_type="extraction",
+                        evidence=evidence_data,
+                        extraction=extraction_data,
+                        hallucination_metrics=hallucination_metrics,
+                        status="success" if hotels else "warning",
+                        metadata={
+                            "location": location,
+                            "preferences": preferences,
+                            "hotels_extracted": len(hotels)
+                        }
+                    )
+                    logger.info(f"Recorded observability data for hotel search: {len(hotels)} hotels")
+
+                except Exception as e:
+                    logger.warning(f"Failed to record observability data: {e}")
+
             return hotels
 
         except Exception as e:
             logger.error(f"Error parsing hotels with LLM: {e}")
+
+            # Record error in observability if collector provided
+            if collector:
+                try:
+                    collector.record_step(
+                        step_name="hotel_search",
+                        step_type="extraction",
+                        status="failed",
+                        error_message=str(e)
+                    )
+                except:
+                    pass
+
             return []
 
     @traceable(name="hotel_agent_run")
@@ -296,6 +376,9 @@ Extract hotel information as JSON array.""")
 
         intent = state.travel_intent
         all_hotels = []
+
+        # Get observability collector from state metadata
+        collector = state.metadata.get("observability_collector", None)
 
         # Parse timeframe to extract dates
         # Try to parse the timeframe intelligently
@@ -342,7 +425,8 @@ Extract hotel information as JSON array.""")
                 check_in=check_in,
                 check_out=check_out,
                 guests=intent.travelers or 1,
-                preferences=intent.accommodation_preferences or ""
+                preferences=intent.accommodation_preferences or "",
+                collector=collector
             )
             all_hotels.extend(hotels)
 

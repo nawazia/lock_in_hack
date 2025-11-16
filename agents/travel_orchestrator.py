@@ -1,6 +1,7 @@
 """Travel Orchestrator - Coordinates all travel planning agents using LangGraph."""
 
 import logging
+import json
 from typing import Any, Dict
 from langsmith import traceable
 from langgraph.graph import END, StateGraph
@@ -14,6 +15,7 @@ from agents.ranking_agent import RankingAgent
 from agents.itinerary_agent import ItineraryAgent
 from agents.audit_agent import AuditAgent
 from models.travel_schemas import TravelPlanningState
+from utils.observability_collector import ObservabilityCollector
 from config.llm_setup import get_llm
 
 logger = logging.getLogger(__name__)
@@ -287,8 +289,17 @@ class TravelOrchestrator:
                 state["user_query"] = query
                 state["needs_user_input"] = False  # Reset flag
                 logger.info("Continuing from existing state")
+
+                # Get existing collector or create new one
+                collector = state.get("metadata", {}).get("observability_collector")
+                if not collector:
+                    collector = ObservabilityCollector(user_query=query)
+                    state["metadata"]["observability_collector"] = collector
             else:
                 # Initialize new state
+                # Create observability collector
+                collector = ObservabilityCollector(user_query=query)
+
                 state = {
                     "user_query": query,
                     "travel_intent": None,
@@ -302,14 +313,43 @@ class TravelOrchestrator:
                     "final_itinerary": None,
                     "next_agent": None,
                     "completed_agents": [],
-                    "metadata": {},
+                    "metadata": {
+                        "observability_collector": collector
+                    },
                     "clarifying_questions": [],
                     "needs_user_input": False
                 }
-                logger.info("Starting new conversation")
+                logger.info("Starting new conversation with observability collection")
 
             # Run the graph
             final_state = self.graph.invoke(state)
+
+            # Generate observability report if pipeline completed
+            if final_state.get("final_itinerary") and collector:
+                try:
+                    # Generate the final observability report
+                    observability_report = collector.generate_report(
+                        final_itinerary=final_state.get("final_itinerary")
+                    )
+
+                    # Add observability report to state metadata
+                    final_state["metadata"]["observability_report"] = observability_report.model_dump()
+
+                    # Also save as JSON string for easy frontend consumption
+                    final_state["metadata"]["observability_json"] = collector.to_json(
+                        final_itinerary=final_state.get("final_itinerary")
+                    )
+
+                    # Print summary to console
+                    collector.print_summary()
+
+                    logger.info(f"Generated observability report: {len(observability_report.steps)} steps, "
+                              f"overall risk={observability_report.overall_hallucination_risk:.3f}, "
+                              f"confidence={observability_report.overall_confidence}, "
+                              f"flags={len(observability_report.hallucination_flags)}")
+
+                except Exception as e:
+                    logger.warning(f"Failed to generate observability report: {e}")
 
             logger.info("Travel planning pipeline step complete")
             return final_state

@@ -51,16 +51,18 @@ class EDFLValidator:
         )
     """
 
-    def __init__(self, llm_backend, h_star: float = 0.05, enable_validation: bool = True):
+    def __init__(self, llm_backend, h_star: float = 0.05, enable_validation: bool = True, use_aligned: bool = True):
         """Initialize EDFL validator.
 
         Args:
             llm_backend: LLM backend compatible with hallbayes (must support chat_create and multi_choice)
             h_star: Target hallucination rate (default 5%)
             enable_validation: If False, always returns (True, 0.0, "validation_disabled")
+            use_aligned: If True, uses aligned Δ̄ computation (recommended)
         """
         self.enable_validation = enable_validation
         self.h_star = h_star
+        self.use_aligned = use_aligned
 
         if not enable_validation:
             logger.info("EDFL validation disabled - all validations will pass")
@@ -73,19 +75,33 @@ class EDFLValidator:
             # Check if we need to adapt BedrockProxyLLM
             adapted_backend = self._adapt_backend_if_needed(llm_backend)
 
-            # Use lower temperature for more consistent decisions
-            # Increase max_tokens_decision for Bedrock compatibility
-            self.planner = _OpenAIPlanner(
-                adapted_backend,
-                temperature=0.2,  # Lower for consistency
-                max_tokens_decision=32  # Higher for Bedrock
-            )
+            # Use aligned validator if requested
+            if use_aligned:
+                logger.info("Using ALIGNED EDFL validator (fixes Δ̄/q/B2T mismatch)")
+                from config.edfl_aligned_validator import AlignedEDFLValidator
+                self._aligned_validator = AlignedEDFLValidator(
+                    llm_backend=llm_backend,
+                    h_star=h_star,
+                    enable_validation=True
+                )
+                self.planner = None  # Use aligned validator instead
+            else:
+                # Use standard hallbayes planner
+                logger.info("Using STANDARD EDFL validator (may have Δ̄=0 issues)")
+                self.planner = _OpenAIPlanner(
+                    adapted_backend,
+                    temperature=0.2,  # Lower for consistency
+                    max_tokens_decision=32  # Higher for Bedrock
+                )
+                self._aligned_validator = None
+
             logger.info(f"EDFL validator initialized with h_star={h_star}")
         except Exception as e:
             logger.warning(f"Failed to initialize EDFL validator: {e}")
             logger.warning("Validation will be disabled")
             self.enable_validation = False
             self.planner = None
+            self._aligned_validator = None
 
     def _adapt_backend_if_needed(self, llm_backend):
         """Adapt backend if it's not compatible with hallbayes.
@@ -138,24 +154,65 @@ class EDFLValidator:
                 - risk_bound: Upper bound on hallucination risk (0-1)
                 - rationale: Human-readable explanation
         """
-        if not self.enable_validation or self.planner is None:
+        if not self.enable_validation:
+            return True, 0.0, "validation_disabled"
+
+        # Use aligned validator if available
+        if self._aligned_validator is not None:
+            result = self._aligned_validator.validate_evidence_based(
+                task_description=task_description,
+                evidence=evidence,
+                llm_output=llm_output,
+                n_samples=n_samples,
+                m=m
+            )
+            # Propagate detailed metrics for observability
+            if hasattr(self._aligned_validator, '_last_detailed_metrics'):
+                self._last_detailed_metrics = self._aligned_validator._last_detailed_metrics
+            return result
+
+        # Fallback to standard validator
+        if self.planner is None:
             return True, 0.0, "validation_disabled"
 
         try:
-            # Truncate evidence to reasonable size
-            evidence_truncated = evidence[:2000] if len(evidence) > 2000 else evidence
-            output_truncated = llm_output[:1000] if len(llm_output) > 1000 else llm_output
+            # NO truncation - pass all evidence to maximize Δ̄
+            # More evidence = higher information gain when it supports the claim
 
-            # Simplified prompt format that works better with decision head
-            prompt = f"""Task: {task_description}
+            # Structure evidence as bullet points for better information gain
+            # This increases Δ̄ by making evidence directly support the predicate
+            print(f"""VERIFICATION TASK: {task_description}
 
-Evidence:
-{evidence_truncated}
+SOURCE EVIDENCE (from web search results):
+{evidence}
 
-Extracted data to verify:
-{output_truncated}
+EXTRACTED CLAIMS TO VERIFY:
+{llm_output}
 
-Question: Is the extracted data fully supported by the evidence above?"""
+INSTRUCTIONS:
+1. Check if EACH extracted claim is explicitly stated in the source evidence
+2. Verify prices, names, dates, and URLs match the source
+3. Answer "yes" ONLY if ALL claims are supported by the evidence above
+4. Answer "no" if ANY claim is unsupported, hallucinated, or contradicts evidence
+
+QUESTION: Are ALL extracted claims fully supported by the source evidence?
+Answer: yes or no""")
+            prompt = f"""VERIFICATION TASK: {task_description}
+
+SOURCE EVIDENCE (from web search results):
+{evidence}
+
+EXTRACTED CLAIMS TO VERIFY:
+{llm_output}
+
+INSTRUCTIONS:
+1. Check if EACH extracted claim is explicitly stated in the source evidence
+2. Verify prices, names, dates, and URLs match the source
+3. Answer "yes" ONLY if ALL claims are supported by the evidence above
+4. Answer "no" if ANY claim is unsupported, hallucinated, or contradicts evidence
+
+QUESTION: Are ALL extracted claims fully supported by the source evidence?
+Answer: yes or no"""
 
             item = _OpenAIItem(
                 prompt=prompt,
@@ -210,20 +267,39 @@ Question: Is the extracted data fully supported by the evidence above?"""
                 - risk_bound: Upper bound on hallucination risk (0-1)
                 - rationale: Human-readable explanation
         """
-        if not self.enable_validation or self.planner is None:
+        if not self.enable_validation:
+            return True, 0.0, "validation_disabled"
+
+        # Use aligned validator if available
+        if self._aligned_validator is not None:
+            return self._aligned_validator.validate_closed_book(
+                question=question,
+                llm_output=llm_output,
+                n_samples=n_samples,
+                m=m
+            )
+
+        # Fallback to standard validator
+        if self.planner is None:
             return True, 0.0, "validation_disabled"
 
         try:
-            # Truncate to reasonable size
-            output_truncated = llm_output[:1500] if len(llm_output) > 1500 else llm_output
+            # NO truncation - pass full output for maximum information
 
-            # Simplified prompt for closed-book validation
+            # Structured prompt for closed-book validation
             prompt = f"""{question}
 
 Proposed answer:
-{output_truncated}
+{llm_output}
 
-Is this answer internally consistent and coherent?"""
+INSTRUCTIONS:
+1. Check if the answer is internally consistent (no contradictions)
+2. Verify dates, locations, and numbers are logically coherent
+3. Answer "yes" if the answer is consistent and plausible
+4. Answer "no" if there are internal contradictions or implausible claims
+
+QUESTION: Is this answer internally consistent and coherent?
+Answer: yes or no"""
 
             item = _OpenAIItem(
                 prompt=prompt,
@@ -273,6 +349,19 @@ Is this answer internally consistent and coherent?"""
         """
         if not extracted_items:
             return True, 0.0, "no_items_to_validate", 0
+
+        # Use aligned validator if available
+        if self._aligned_validator is not None:
+            result = self._aligned_validator.validate_extraction_batch(
+                task_description=task_description,
+                evidence=evidence,
+                extracted_items=extracted_items,
+                item_type=item_type
+            )
+            # Propagate detailed metrics for observability
+            if hasattr(self._aligned_validator, '_last_detailed_metrics'):
+                self._last_detailed_metrics = self._aligned_validator._last_detailed_metrics
+            return result
 
         import json
 
