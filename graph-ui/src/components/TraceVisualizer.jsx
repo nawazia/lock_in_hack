@@ -11,7 +11,7 @@ import 'reactflow/dist/style.css';
 import CustomNode from './CustomNode';
 import NodeSidebar from './NodeSidebar';
 import StatsPanel from './StatsPanel';
-import { fetchLatestTrace, fetchTraceDetails, fetchTraceRuns } from '../services/api';
+import { fetchTraceDetails, fetchTraceRuns } from '../services/api';
 import { processTraceData, getTraceStats } from '../utils/traceProcessor';
 
 const nodeTypes = {
@@ -44,39 +44,42 @@ const TraceVisualizer = () => {
     }
   };
 
-  const loadTrace = async (traceId = null) => {
+  const clearTraceView = useCallback(() => {
+    setNodes([]);
+    setEdges([]);
+    setTraceStats(null);
+    setSelectedNode(null);
+  }, [setNodes, setEdges]);
+
+  const loadTrace = async (traceId) => {
+    if (!traceId) {
+      clearTraceView();
+      return;
+    }
+
     setLoading(true);
     setError(null);
 
     try {
-      let response;
-      if (traceId) {
-        response = await fetchTraceDetails(traceId);
-      } else {
-        response = await fetchLatestTrace();
-      }
+      const response = await fetchTraceDetails(traceId);
 
       if (response.success && response.trace) {
         const { nodes: processedNodes, edges: processedEdges } = processTraceData(response.trace);
         setNodes(processedNodes);
         setEdges(processedEdges);
         setTraceStats(getTraceStats(response.trace));
-        setSelectedTraceId(response.trace.run_id || traceId);
       } else {
         setError(response.error || 'Failed to load trace data');
+        clearTraceView();
       }
     } catch (err) {
       console.error('Error loading trace:', err);
       setError(err.message || 'Failed to load trace');
+      clearTraceView();
     } finally {
       setLoading(false);
     }
   };
-
-  // Load latest trace on mount
-  useEffect(() => {
-    loadTrace();
-  }, []);
 
   const onNodeClick = useCallback((event, node) => {
     setSelectedNode(node);
@@ -87,11 +90,20 @@ const TraceVisualizer = () => {
   }, []);
 
   const handleRefresh = () => {
-    loadTrace(selectedTraceId);
+    if (selectedTraceId) {
+      loadTrace(selectedTraceId);
+    }
     loadAvailableTraces();
   };
 
   const handleTraceSelect = (traceId) => {
+    if (!traceId) {
+      setSelectedTraceId(null);
+      clearTraceView();
+      return;
+    }
+
+    setSelectedTraceId(traceId);
     loadTrace(traceId);
   };
 

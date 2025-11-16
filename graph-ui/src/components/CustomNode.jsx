@@ -2,7 +2,7 @@ import React from 'react';
 import { Handle, Position } from 'reactflow';
 
 const CustomNode = ({ data, selected }) => {
-  const { name, runType, status, latencyFormatted, totalTokens, error } = data;
+  const { name, runType, latencyFormatted, totalTokens, error, isCollapsed } = data;
 
   // Icon based on run type
   const getIcon = () => {
@@ -20,13 +20,6 @@ const CustomNode = ({ data, selected }) => {
     }
   };
 
-  // Status indicator
-  const getStatusIndicator = () => {
-    if (error) return '❌';
-    if (status === 'success') return '✅';
-    return '⏳';
-  };
-
   return (
     <div
       style={{
@@ -36,9 +29,10 @@ const CustomNode = ({ data, selected }) => {
         flexDirection: 'column',
         justifyContent: 'space-between',
         color: 'white',
-        fontSize: '12px',
+        fontSize: '13px',
         boxShadow: selected ? '0 0 0 3px #60A5FA' : 'none',
-        transition: 'all 0.2s'
+        transition: 'all 0.2s',
+        position: 'relative'
       }}
     >
       <Handle
@@ -48,51 +42,74 @@ const CustomNode = ({ data, selected }) => {
       />
 
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
-        <span style={{ fontSize: '16px' }}>{getIcon()}</span>
-        <span style={{ fontSize: '14px', fontWeight: 'bold', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+        <span style={{ fontSize: '18px' }}>{getIcon()}</span>
+        <span style={{
+          fontSize: '15px',
+          fontWeight: '600',
+          flex: 1,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          lineHeight: '1.3'
+        }}>
           {name}
         </span>
-        <span style={{ fontSize: '14px' }}>{getStatusIndicator()}</span>
       </div>
 
       {/* Type */}
       <div style={{
-        fontSize: '10px',
-        opacity: 0.8,
+        fontSize: '11px',
+        opacity: 0.75,
         textTransform: 'uppercase',
-        marginBottom: '6px'
+        marginBottom: '8px',
+        letterSpacing: '0.5px'
       }}>
-        {runType}
+        {runType || 'unknown'}
       </div>
 
       {/* Metrics */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', fontSize: '11px' }}>
-        {latencyFormatted && (
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span>⏱️ Latency:</span>
-            <span style={{ fontWeight: 'bold' }}>{latencyFormatted}</span>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '12px' }}>
+        {latencyFormatted && latencyFormatted !== 'N/A' && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ opacity: 0.9 }}>⏱️</span>
+            <span style={{ fontWeight: '600' }}>{latencyFormatted}</span>
           </div>
         )}
         {totalTokens > 0 && (
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span>🔤 Tokens:</span>
-            <span style={{ fontWeight: 'bold' }}>{totalTokens.toLocaleString()}</span>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ opacity: 0.9 }}>🔤</span>
+            <span style={{ fontWeight: '600' }}>{totalTokens.toLocaleString()}</span>
           </div>
         )}
       </div>
+
+      {/* Collapsed indicator */}
+      {isCollapsed && (
+        <div style={{
+          marginTop: '8px',
+          padding: '4px 6px',
+          background: 'rgba(255, 255, 255, 0.2)',
+          borderRadius: '4px',
+          fontSize: '11px',
+          fontWeight: '600',
+          textAlign: 'center'
+        }}>
+          📦 COLLAPSED
+        </div>
+      )}
 
       {/* Error indicator */}
       {error && (
         <div style={{
-          marginTop: '6px',
-          padding: '4px',
+          marginTop: '8px',
+          padding: '4px 6px',
           background: 'rgba(239, 68, 68, 0.3)',
           borderRadius: '4px',
-          fontSize: '10px',
-          fontWeight: 'bold'
+          fontSize: '11px',
+          fontWeight: '700',
+          textAlign: 'center'
         }}>
-          ERROR
+          ❌ ERROR
         </div>
       )}
 

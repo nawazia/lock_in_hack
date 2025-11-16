@@ -4,18 +4,18 @@
 
 // Color mapping based on run type
 const RUN_TYPE_COLORS = {
-  llm: '#3B82F6',      // Blue
-  tool: '#10B981',     // Green
-  chain: '#8B5CF6',    // Purple
-  retriever: '#F59E0B', // Orange
-  default: '#6B7280'   // Gray
+  llm: "#3B82F6", // Blue
+  tool: "#10B981", // Green
+  chain: "#8B5CF6", // Purple
+  retriever: "#F59E0B", // Orange
+  default: "#6B7280", // Gray
 };
 
 // Status colors
 const STATUS_COLORS = {
-  success: '#10B981',  // Green
-  error: '#EF4444',    // Red
-  pending: '#F59E0B'   // Orange
+  success: "#10B981", // Green
+  error: "#EF4444", // Red
+  pending: "#F59E0B", // Orange
 };
 
 /**
@@ -23,9 +23,10 @@ const STATUS_COLORS = {
  */
 const calculateNodeSize = (run) => {
   const baseSize = 180;
-  const latency = run.end_time && run.start_time
-    ? new Date(run.end_time) - new Date(run.start_time)
-    : 0;
+  const latency =
+    run.end_time && run.start_time
+      ? new Date(run.end_time) - new Date(run.start_time)
+      : 0;
 
   const totalTokens = run.total_tokens || 0;
 
@@ -33,10 +34,10 @@ const calculateNodeSize = (run) => {
   const latencyFactor = Math.min(latency / 1000, 10); // Cap at 10s
   const tokenFactor = Math.min(totalTokens / 1000, 10); // Cap at 10k tokens
 
-  const width = baseSize + (latencyFactor * 5) + (tokenFactor * 3);
-  const height = 120 + (latencyFactor * 2);
+  const width = baseSize + latencyFactor * 5 + tokenFactor * 3;
+  const height = 120 + latencyFactor * 2;
 
-  return { width: Math.round(width), height: Math.round(height) };
+  return { width: 180, height: 120 };
 };
 
 /**
@@ -47,7 +48,7 @@ const getNodeColor = (run) => {
     return STATUS_COLORS.error;
   }
 
-  const runType = run.run_type || 'default';
+  const runType = run.runType || "default";
   return RUN_TYPE_COLORS[runType] || RUN_TYPE_COLORS.default;
 };
 
@@ -55,7 +56,7 @@ const getNodeColor = (run) => {
  * Format latency in human-readable form
  */
 export const formatLatency = (startTime, endTime) => {
-  if (!startTime || !endTime) return 'N/A';
+  if (!startTime || !endTime) return "N/A";
 
   const latencyMs = new Date(endTime) - new Date(startTime);
 
@@ -74,15 +75,16 @@ export const formatLatency = (startTime, endTime) => {
  * Extract key metrics from a run
  */
 const extractMetrics = (run) => {
-  const latency = run.end_time && run.start_time
-    ? new Date(run.end_time) - new Date(run.start_time)
-    : null;
+  const latency =
+    run.end_time && run.start_time
+      ? new Date(run.end_time) - new Date(run.start_time)
+      : null;
 
   return {
     id: run.id,
     name: run.name,
     runType: run.run_type,
-    status: run.error ? 'error' : (run.end_time ? 'success' : 'pending'),
+    status: run.error ? "error" : run.end_time ? "success" : "pending",
     startTime: run.start_time,
     endTime: run.end_time,
     latency: latency,
@@ -98,7 +100,7 @@ const extractMetrics = (run) => {
     feedbackStats: run.feedback_stats || {},
     parentRunId: run.parent_run_id,
     childRunIds: run.child_run_ids || [],
-    events: run.events || []
+    events: run.events || [],
   };
 };
 
@@ -110,13 +112,13 @@ const buildTraceTree = (runs) => {
   const rootRuns = [];
 
   // First pass: create map of all runs
-  runs.forEach(run => {
+  runs.forEach((run) => {
     const metrics = extractMetrics(run);
     runMap.set(run.id, { ...metrics, children: [] });
   });
 
   // Second pass: build parent-child relationships
-  runs.forEach(run => {
+  runs.forEach((run) => {
     const node = runMap.get(run.id);
     if (run.parent_run_id && runMap.has(run.parent_run_id)) {
       const parent = runMap.get(run.parent_run_id);
@@ -137,7 +139,7 @@ const treeToFlowGraph = (rootRuns, runMap) => {
   const edges = [];
 
   let yOffset = 0;
-  const levelSpacing = 200;
+  const levelSpacing = 250;
   const nodeSpacing = 50;
 
   const processNode = (node, level = 0, xOffset = 0, parentId = null) => {
@@ -147,21 +149,21 @@ const treeToFlowGraph = (rootRuns, runMap) => {
     // Create React Flow node
     const flowNode = {
       id: node.id,
-      type: 'custom',
+      type: "custom",
       position: { x: level * levelSpacing, y: yOffset },
       data: {
         ...node,
         color: color,
-        size: size
+        size: size,
       },
       style: {
         width: size.width,
         height: size.height,
         backgroundColor: color,
-        border: node.error ? '3px solid #EF4444' : '2px solid #E5E7EB',
-        borderRadius: '8px',
-        padding: '10px'
-      }
+        border: node.error ? "3px solid #EF4444" : "2px solid #E5E7EB",
+        borderRadius: "8px",
+        padding: "10px",
+      },
     };
 
     nodes.push(flowNode);
@@ -172,25 +174,26 @@ const treeToFlowGraph = (rootRuns, runMap) => {
         id: `${parentId}-${node.id}`,
         source: parentId,
         target: node.id,
-        type: 'smoothstep',
-        animated: node.runType === 'llm',
+        type: "smoothstep",
+        animated: node.runType === "llm",
         style: {
           stroke: color,
-          strokeWidth: 2
-        }
+          strokeWidth: 2,
+        },
       });
     }
 
-    yOffset += size.height + nodeSpacing;
-
     // Process children
-    node.children.forEach(child => {
+    node.children.forEach((child, i) => {
       processNode(child, level + 1, xOffset, node.id);
+      if (node.children.length > 1) {
+        yOffset += size.height + nodeSpacing;
+      }
     });
   };
 
   // Process all root nodes
-  rootRuns.forEach(root => {
+  rootRuns.forEach((root) => {
     processNode(root, 0, 0, null);
   });
 
@@ -204,7 +207,7 @@ export const processTraceData = (traceData) => {
   if (!traceData || !traceData.runs || traceData.runs.length === 0) {
     return { nodes: [], edges: [], runMap: new Map() };
   }
-
+  print(traceData.runs);
   const { runMap, rootRuns } = buildTraceTree(traceData.runs);
   const { nodes, edges } = treeToFlowGraph(rootRuns, runMap);
 
@@ -222,10 +225,10 @@ export const getTraceStats = (traceData) => {
   const runs = traceData.runs;
 
   const totalRuns = runs.length;
-  const llmCalls = runs.filter(r => r.run_type === 'llm').length;
-  const toolCalls = runs.filter(r => r.run_type === 'tool').length;
-  const chainCalls = runs.filter(r => r.run_type === 'chain').length;
-  const errors = runs.filter(r => r.error).length;
+  const llmCalls = runs.filter((r) => r.run_type === "llm").length;
+  const toolCalls = runs.filter((r) => r.run_type === "tool").length;
+  const chainCalls = runs.filter((r) => r.run_type === "chain").length;
+  const errors = runs.filter((r) => r.error).length;
 
   const totalTokens = runs.reduce((sum, r) => sum + (r.total_tokens || 0), 0);
   const totalLatency = runs.reduce((sum, r) => {
@@ -242,6 +245,6 @@ export const getTraceStats = (traceData) => {
     chainCalls,
     errors,
     totalTokens,
-    totalLatency: formatLatency(new Date(0), new Date(totalLatency))
+    totalLatency: formatLatency(new Date(0), new Date(totalLatency)),
   };
 };
