@@ -157,8 +157,7 @@ Return the information as a JSON object. If information is not mentioned, use nu
                     questions.append("When are you planning to travel? Please provide dates or duration (e.g., Dec 20-27, 1 week in January)")
                 elif field == "locations":
                     questions.append("Where would you like to travel to? Please specify city/cities or country/countries.")
-                elif field == "interests":
-                    questions.append("What are your main interests for this trip? (e.g., food, culture, adventure, relaxation, history, nature)")
+                # Interests are optional now - don't ask unless user wants to specify
 
             # Additional questions for optional but useful fields
             if not intent.travelers or intent.travelers == 0:
@@ -214,68 +213,8 @@ Return the information as a JSON object. If information is not mentioned, use nu
         Returns:
             Updated state with extracted travel intent and clarifying questions
         """
-        # Check if this is the first interaction and we need to ask about optimization
-        is_first_interaction = len(state.conversation_history) == 0
-
-        # If this is first interaction and optimization not set, ask about it first
-        if is_first_interaction and state.optimization_preference == OptimizationPreference.DEFAULT:
-            # Check if the query contains optimization preference
-            opt_pref = self.extract_optimization_preference(state.user_query)
-
-            # If no clear preference in query, ask the user
-            if opt_pref == OptimizationPreference.DEFAULT and "optim" not in state.user_query.lower():
-                state.conversation_history.append({
-                    "role": "user",
-                    "content": state.user_query
-                })
-
-                optimization_question = """Before we start planning your trip, what would you like to optimize for in terms of AI model usage?
-
-1. Nothing (default) - I'll automatically select the best AI models for each task
-2. Latency - Prioritize speed and performance (uses more powerful/expensive models, higher API costs)
-3. Cost - Minimize LLM API call costs (uses smaller/cheaper models, lower API bills)
-4. Carbon emissions - Minimize environmental impact (uses energy-efficient models)
-
-Note: This is about the AI processing costs, not your travel budget.
-You can type your preference (e.g., "latency", "cost", "carbon", or "nothing")."""
-
-                state.clarifying_questions = [optimization_question]
-                state.needs_user_input = True
-                state.metadata["awaiting_optimization_preference"] = True
-
-                state.conversation_history.append({
-                    "role": "assistant",
-                    "content": optimization_question
-                })
-
-                logger.info("Asking user for optimization preference")
-                return state
-            else:
-                # Set the preference if found in query
-                state.optimization_preference = opt_pref
-                logger.info(f"Optimization preference set to: {opt_pref.value}")
-
-        # If we were waiting for optimization preference, extract it now
-        if state.metadata.get("awaiting_optimization_preference", False):
-            opt_pref = self.extract_optimization_preference(state.user_query)
-            state.optimization_preference = opt_pref
-            state.metadata["awaiting_optimization_preference"] = False
-
-            state.conversation_history.append({
-                "role": "user",
-                "content": state.user_query
-            })
-
-            state.conversation_history.append({
-                "role": "assistant",
-                "content": f"Great! I'll optimize for {opt_pref.value} in terms of LLM API costs. Now, tell me about your travel plans!"
-            })
-
-            state.clarifying_questions = []
-            state.needs_user_input = True  # Still need travel info
-
-            logger.info(f"Optimization preference set to: {opt_pref.value}, ready for travel intent")
-            return state
+        # Optimization preference is now set via UI slider, not through conversation
+        # No need to ask the user about it anymore
 
         # Extract travel intent from user query, merging with existing intent if available
         intent = self.extract_intent(

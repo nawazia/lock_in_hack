@@ -43,8 +43,7 @@ class TravelIntent(BaseModel):
         - Budget
         - Timeframe
         - Locations
-        - Interests
-        - Activities (optional but good to have)
+        - Interests (optional - can proceed without)
 
         Returns:
             True if all required information is present
@@ -52,9 +51,9 @@ class TravelIntent(BaseModel):
         has_budget = bool(self.budget)
         has_timeframe = bool(self.timeframe)
         has_locations = bool(self.locations and len(self.locations) > 0)
-        has_interests = bool(self.interests and len(self.interests) > 0)
 
-        return has_budget and has_timeframe and has_locations and has_interests
+        # Interests are helpful but not strictly required
+        return has_budget and has_timeframe and has_locations
 
     def get_missing_fields(self) -> List[str]:
         """Get list of missing required fields.
@@ -70,8 +69,7 @@ class TravelIntent(BaseModel):
             missing.append("timeframe")
         if not self.locations or len(self.locations) == 0:
             missing.append("locations")
-        if not self.interests or len(self.interests) == 0:
-            missing.append("interests")
+        # Interests are optional - don't include in missing fields
 
         return missing
 

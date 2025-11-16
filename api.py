@@ -21,6 +21,7 @@ from langsmith import Client as LangSmithClient
 from pydantic import BaseModel
 from pydantic.json import pydantic_encoder
 import requests
+import uuid
 
 from utils.logger import setup_logger
 
@@ -34,8 +35,9 @@ logger = setup_logger(level=os.getenv("LOG_LEVEL", "INFO"))
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
-# Initialize the orchestrator (singleton)
-orchestrator = None
+# Session storage for conversation state
+# session_id -> {"orchestrator": TravelOrchestrator, "state": dict, "history": list}
+sessions = {}
 
 # Initialize LangSmith client if tracing is enabled
 langsmith_client = None
@@ -350,6 +352,112 @@ def chat():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/api/query", methods=["POST"])
+def travel_query():
+    """
+    Travel planning endpoint using TravelOrchestrator.
+    Accepts a travel query and returns itinerary or clarifying questions.
+    Maintains conversation state across requests using session_id.
+    """
+    try:
+        from agents.travel_orchestrator import TravelOrchestrator
+
+        data = request.json
+        query = data.get("query", "")
+        session_id = data.get("session_id")
+        optimization_preference = data.get("optimization_preference", "default")
+
+        if not query:
+            return jsonify({"success": False, "error": "Query is required"}), 400
+
+        # Get or create session
+        if session_id and session_id in sessions:
+            # Reuse existing session
+            session = sessions[session_id]
+            orchestrator = session["orchestrator"]
+            previous_state = session["state"]
+            conversation_history = session.get("history", [])
+
+            logger.info(f"Resuming session {session_id} with {len(conversation_history)} messages")
+        else:
+            # Create new session
+            session_id = str(uuid.uuid4())
+            orchestrator = TravelOrchestrator()
+            previous_state = None
+            conversation_history = []
+
+            logger.info(f"Created new session {session_id}")
+
+        # Add user message to history
+        conversation_history.append({"role": "user", "content": query})
+
+        # Process the query with previous state context
+        if previous_state:
+            # Continue from previous state
+            # Override optimization preference from slider if it changed
+            if optimization_preference:
+                previous_state["optimization_preference"] = optimization_preference
+            state = orchestrator.process_query(query.strip(), existing_state=previous_state)
+        else:
+            # First message - set optimization preference from slider
+            state = orchestrator.process_query(query.strip())
+            # Override optimization preference if provided
+            if optimization_preference:
+                state["optimization_preference"] = optimization_preference
+
+        # Check if waiting for more input
+        needs_input = orchestrator.is_waiting_for_input(state)
+
+        # Add assistant response to history
+        if needs_input and state.get("clarifying_questions"):
+            assistant_content = "\n".join(state["clarifying_questions"])
+        elif state.get("final_itinerary"):
+            itinerary = state['final_itinerary']
+            if isinstance(itinerary, dict):
+                assistant_content = f"Created itinerary: {itinerary.get('title', 'Your Trip')}"
+            else:
+                assistant_content = f"Created itinerary: {itinerary.title}"
+        else:
+            assistant_content = "Processing your request..."
+
+        conversation_history.append({"role": "assistant", "content": assistant_content})
+
+        # Store updated session
+        sessions[session_id] = {
+            "orchestrator": orchestrator,
+            "state": state,
+            "history": conversation_history
+        }
+
+        # Get metadata and remove non-serializable objects
+        metadata = state.get("metadata", {})
+        if "observability_collector" in metadata:
+            # Get observability report instead of the collector object
+            collector = metadata.pop("observability_collector")
+            try:
+                metadata["observability_report"] = collector.generate_report()
+            except:
+                pass  # If report generation fails, just skip it
+
+        # Build response
+        response = {
+            "success": True,
+            "session_id": session_id,
+            "needs_user_input": needs_input,
+            "clarifying_questions": state.get("clarifying_questions", []),
+            "travel_intent": state.get("travel_intent"),
+            "final_itinerary": state.get("final_itinerary"),
+            "summary": state.get("summary"),
+            "metadata": metadata,
+        }
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error in travel query endpoint: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/", methods=["GET"])
 def index():
     """Root endpoint with API information."""
@@ -359,6 +467,7 @@ def index():
                 "service": "Multi-Agent News Processing System",
                 "version": "1.0.0",
                 "endpoints": {
+                    "POST /api/query": "Travel planning query",
                     "GET /api/traces": "List available traces",
                     "GET /api/traces/latest": "Get latest trace",
                     "GET /api/traces/<run_id>": "Get trace details",
