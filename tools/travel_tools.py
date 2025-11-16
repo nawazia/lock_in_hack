@@ -34,55 +34,63 @@ def validate_urls_with_llm(urls_with_titles: List[Dict[str, str]]) -> List[str]:
             for i, item in enumerate(urls_with_titles[:15])  # Check up to 15 URLs
         ])
 
-        prompt = f"""Review these URLs and identify which could help users BOOK flights/hotels (not just read about them).
+        prompt = f"""Which URLs should be REJECTED because they're forums/social media/generic blogs?
 
 URLs:
 {url_list}
 
-ACCEPT (booking/deal sites):
-- Booking sites: Expedia, Kayak, Hotels.com, Booking.com, Agoda
-- Airline/hotel sites: Delta.com, Marriott.com, etc.
-- Travel deal sites: TheFlightDeal, TravelPirates, deal aggregators
-- Travel agencies with booking capability
+❌ REJECT ONLY these types:
+- Social media: Reddit, Quora, Facebook, Twitter, Instagram, TikTok
+- Forums: TripAdvisor forums, travel discussion boards
+- News: CNN, BBC, NYTimes (generic travel articles, not deals)
+- Wikipedia, general encyclopedias
+- Blogs with ZERO pricing (just tips/guides)
 
-REJECT (forums/social/pure blogs):
-- Reddit, Quora, Facebook, Twitter, Instagram
-- TripAdvisor forums (not booking pages)
-- Wikipedia, news sites (CNN, BBC)
-- Personal travel blogs with NO booking links
+✅ KEEP everything else including:
+- Booking sites, airlines, hotels
+- Deal sites, price aggregators, flight deal alerts
+- Travel cost guides, price comparison sites
+- ANY site mentioning prices, deals, or costs
 
-Return ONLY comma-separated numbers (e.g., "1,3,5,7") or "ALL" if all are acceptable.
-NO explanations. NO parentheses. JUST numbers."""
+If in doubt, KEEP IT (we'll validate content later).
+
+Return:
+- "NONE" if all URLs are good (keep all)
+- Comma-separated numbers to reject (e.g., "2,5")
+NO explanations."""
 
         response = llm.invoke(prompt)
         content = response.content if hasattr(response, 'content') else str(response)
         content = content.strip()
 
-        # Parse the response
+        # Parse the response (now returns URLs to REJECT, not accept)
         if "NONE" in content.upper():
-            logger.info("LLM found no legitimate booking URLs")
-            return []
-
-        if "ALL" in content.upper():
-            logger.info("LLM accepted all URLs as legitimate")
+            logger.info("LLM said NONE to reject - keeping all URLs")
             return [item['url'] for item in urls_with_titles]
 
-        # Extract just the numbers from the response (ignore any extra text)
+        # Extract numbers to reject
         import re
         numbers = re.findall(r'\d+', content)
 
         if not numbers:
-            logger.warning(f"Could not find numbers in LLM response: {content[:100]}")
-            # Be lenient: return all URLs if we can't parse
+            logger.info(f"No reject numbers found in LLM response - keeping all URLs")
+            # No numbers to reject = keep all
             return [item['url'] for item in urls_with_titles]
 
         try:
-            indices = [int(n) - 1 for n in numbers]
-            legitimate_urls = [urls_with_titles[i]['url'] for i in indices if 0 <= i < len(urls_with_titles)]
-            logger.info(f"LLM validated {len(legitimate_urls)}/{len(urls_with_titles)} URLs as legitimate")
+            # Indices to REJECT (1-indexed from LLM)
+            reject_indices = set(int(n) - 1 for n in numbers)
+            # Keep URLs NOT in reject list
+            legitimate_urls = [
+                urls_with_titles[i]['url']
+                for i in range(len(urls_with_titles))
+                if i not in reject_indices
+            ]
+            rejected_count = len(urls_with_titles) - len(legitimate_urls)
+            logger.info(f"LLM rejected {rejected_count}/{len(urls_with_titles)} URLs (keeping {len(legitimate_urls)})")
             return legitimate_urls
         except Exception as e:
-            logger.warning(f"Error parsing indices: {e}")
+            logger.warning(f"Error parsing reject indices: {e}")
             # Be lenient: return all URLs
             return [item['url'] for item in urls_with_titles]
 

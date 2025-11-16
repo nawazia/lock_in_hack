@@ -15,6 +15,11 @@ faiss-cpu>=1.7.4  # Alternative: faiss-gpu for GPU support
 # Valyu Search (existing tool)
 valyu>=0.1.0
 
+# Hallucination Detection (EDFL framework)
+# Note: hallbayes is installed from ../hallbayes directory
+# It requires: openai>=1.0.0 (already included above)
+# Optional backends: anthropic, transformers, torch, ollama, requests
+
 # Data handling
 pydantic>=2.0.0
 pandas>=2.0.0

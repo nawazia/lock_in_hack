@@ -213,7 +213,12 @@ class BudgetAgent:
             return state
 
         if not state.flights or not state.hotels:
-            logger.warning("No flights or hotels available, skipping budget matching")
+            missing = []
+            if not state.flights:
+                missing.append("flights")
+            if not state.hotels:
+                missing.append("hotels")
+            logger.warning(f"Missing {' and '.join(missing)} - budget matching requires both. Skipping.")
             state.completed_agents.append("budget")
             return state
 
