@@ -2,7 +2,7 @@ import React from 'react';
 import { Handle, Position } from 'reactflow';
 
 const CustomNode = ({ data, selected }) => {
-  const { name, runType, latencyFormatted, totalTokens, error, isCollapsed } = data;
+  const { name, runType, latencyFormatted, totalTokens, error, isCollapsed, collapsedCount, collapsedNodes, modelName } = data;
 
   // Icon based on run type
   const getIcon = () => {
@@ -56,15 +56,29 @@ const CustomNode = ({ data, selected }) => {
         </span>
       </div>
 
-      {/* Type */}
+      {/* Type and Model */}
       <div style={{
         fontSize: '11px',
         opacity: 0.75,
-        textTransform: 'uppercase',
         marginBottom: '8px',
-        letterSpacing: '0.5px'
+        letterSpacing: '0.5px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '2px'
       }}>
-        {runType || 'unknown'}
+        <div style={{ textTransform: 'uppercase' }}>
+          {runType || 'unknown'}
+        </div>
+        {modelName && (
+          <div style={{
+            fontSize: '10px',
+            opacity: 0.9,
+            fontWeight: '500',
+            textTransform: 'none'
+          }}>
+            {modelName}
+          </div>
+        )}
       </div>
 
       {/* Metrics */}
@@ -94,7 +108,7 @@ const CustomNode = ({ data, selected }) => {
           fontWeight: '600',
           textAlign: 'center'
         }}>
-          📦 COLLAPSED
+          📦 +{collapsedCount} {collapsedCount === 1 ? 'node' : 'nodes'}
         </div>
       )}
 

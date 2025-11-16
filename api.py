@@ -20,6 +20,7 @@ from flask_cors import CORS
 from langsmith import Client as LangSmithClient
 from pydantic import BaseModel
 from pydantic.json import pydantic_encoder
+import requests
 
 from utils.logger import setup_logger
 
@@ -272,6 +273,83 @@ def get_trace_details(run_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/api/chat", methods=["POST"])
+def chat():
+    """
+    Chat endpoint backed by OpenRouter GPT-4o-mini.
+    Accepts messages with conversation history.
+    """
+    try:
+        data = request.json
+        user_message = data.get("message", "")
+        history = data.get("history", [])
+
+        if not user_message:
+            return jsonify({"success": False, "error": "Message is required"}), 400
+
+        # Get OpenRouter API key from environment
+        openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
+        if not openrouter_api_key:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "OPENROUTER_API_KEY not configured in .env",
+                    }
+                ),
+                503,
+            )
+
+        # Build messages array for OpenRouter
+        messages = [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant that helps users understand LangSmith traces. You have access to trace node information including inputs, outputs, latency, tokens, and errors. Provide clear, concise explanations about the trace execution.",
+            }
+        ]
+
+        # Add conversation history
+        messages.extend(history)
+
+        # Add current user message
+        messages.append({"role": "user", "content": user_message})
+
+        # Call OpenRouter API
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {openrouter_api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "openai/gpt-4o-mini",
+                "messages": messages,
+            },
+            timeout=30,
+        )
+
+        if response.status_code != 200:
+            logger.error(f"OpenRouter API error: {response.text}")
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": f"OpenRouter API error: {response.status_code}",
+                    }
+                ),
+                500,
+            )
+
+        response_data = response.json()
+        assistant_message = response_data["choices"][0]["message"]["content"]
+
+        return jsonify({"success": True, "response": assistant_message}), 200
+
+    except Exception as e:
+        logger.error(f"Error in chat endpoint: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/", methods=["GET"])
 def index():
     """Root endpoint with API information."""
@@ -284,6 +362,7 @@ def index():
                     "GET /api/traces": "List available traces",
                     "GET /api/traces/latest": "Get latest trace",
                     "GET /api/traces/<run_id>": "Get trace details",
+                    "POST /api/chat": "Chat with trace assistant",
                     "GET /health": "Health check",
                 },
                 "langsmith": {

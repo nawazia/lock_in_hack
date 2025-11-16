@@ -37,7 +37,7 @@ const calculateNodeSize = (run) => {
   const width = baseSize + latencyFactor * 5 + tokenFactor * 3;
   const height = 120 + latencyFactor * 2;
 
-  return { width: 180, height: 120 };
+  return { width: 250, height: 150 };
 };
 
 /**
@@ -72,6 +72,40 @@ export const formatLatency = (startTime, endTime) => {
 };
 
 /**
+ * Extract model name from LLM outputs
+ */
+const extractModelName = (run) => {
+  if (run.run_type !== 'llm' || !run.outputs) {
+    return null;
+  }
+
+  try {
+    // Try to get model_name from llm_output
+    if (run.outputs.llm_output && run.outputs.llm_output.model_name) {
+      return run.outputs.llm_output.model_name;
+    }
+
+    // Try to get from generations response_metadata
+    if (run.outputs.generations &&
+        Array.isArray(run.outputs.generations) &&
+        run.outputs.generations[0] &&
+        Array.isArray(run.outputs.generations[0]) &&
+        run.outputs.generations[0][0] &&
+        run.outputs.generations[0][0].message &&
+        run.outputs.generations[0][0].message.kwargs &&
+        run.outputs.generations[0][0].message.kwargs.response_metadata &&
+        run.outputs.generations[0][0].message.kwargs.response_metadata.model_name) {
+      return run.outputs.generations[0][0].message.kwargs.response_metadata.model_name;
+    }
+  } catch (e) {
+    // If any error occurs during extraction, just return null
+    return null;
+  }
+
+  return null;
+};
+
+/**
  * Extract key metrics from a run
  */
 const extractMetrics = (run) => {
@@ -101,6 +135,7 @@ const extractMetrics = (run) => {
     parentRunId: run.parent_run_id,
     childRunIds: run.child_run_ids || [],
     events: run.events || [],
+    modelName: extractModelName(run),
   };
 };
 
@@ -132,6 +167,50 @@ const buildTraceTree = (runs) => {
 };
 
 /**
+ * Compress single-child chains with the same run type.
+ *
+ * Example: A -> B -> C -> D (where D has multiple children)
+ * If A, B, C, D all have same runType, compress to just A pointing to D's children.
+ */
+const compressChains = (node) => {
+  // Recursively compress children first
+  node.children.forEach((child) => compressChains(child));
+
+  // Check if we should compress this chain
+  // Start from current node and walk down single-child chain
+  let current = node;
+  let chainNodes = [current];
+
+  // Walk down the chain while:
+  // 1. Current node has exactly one child
+  // 2. Child has same runType as the chain start
+  while (
+    current.children.length === 1 &&
+    current.children[0].runType === node.runType
+  ) {
+    current = current.children[0];
+    chainNodes.push(current);
+  }
+
+  // If we found a chain (more than just the original node), compress it
+  if (chainNodes.length > 1) {
+    // Keep the first node in the chain (the current node)
+    // Point it directly to the last node's children
+    const lastNode = chainNodes[chainNodes.length - 1];
+
+    // Mark the first node as collapsed and store compressed count
+    node.isCollapsed = true;
+    node.collapsedCount = chainNodes.length - 1;
+    node.collapsedNodes = chainNodes.slice(1).map((n) => n.name);
+
+    // Replace children: skip all intermediate nodes, use last node's children
+    node.children = lastNode.children;
+  }
+
+  return node;
+};
+
+/**
  * Convert tree to React Flow nodes and edges
  */
 const treeToFlowGraph = (rootRuns, runMap) => {
@@ -139,8 +218,8 @@ const treeToFlowGraph = (rootRuns, runMap) => {
   const edges = [];
 
   let yOffset = 0;
-  const levelSpacing = 250;
-  const nodeSpacing = 50;
+  const levelSpacing = 300;
+  const nodeSpacing = 10;
 
   const processNode = (node, level = 0, xOffset = 0, parentId = null) => {
     const size = calculateNodeSize(node);
@@ -209,6 +288,10 @@ export const processTraceData = (traceData) => {
   }
   print(traceData.runs);
   const { runMap, rootRuns } = buildTraceTree(traceData.runs);
+
+  // Compress single-child chains with same run type
+  rootRuns.forEach((root) => compressChains(root));
+
   const { nodes, edges } = treeToFlowGraph(rootRuns, runMap);
 
   return { nodes, edges, runMap };
@@ -224,19 +307,21 @@ export const getTraceStats = (traceData) => {
 
   const runs = traceData.runs;
 
+  // Find the root run (no parent_run_id)
+  const rootRun = runs.find((r) => !r.parent_run_id);
+
   const totalRuns = runs.length;
   const llmCalls = runs.filter((r) => r.run_type === "llm").length;
   const toolCalls = runs.filter((r) => r.run_type === "tool").length;
   const chainCalls = runs.filter((r) => r.run_type === "chain").length;
   const errors = runs.filter((r) => r.error).length;
 
-  const totalTokens = runs.reduce((sum, r) => sum + (r.total_tokens || 0), 0);
-  const totalLatency = runs.reduce((sum, r) => {
-    if (r.start_time && r.end_time) {
-      return sum + (new Date(r.end_time) - new Date(r.start_time));
-    }
-    return sum;
-  }, 0);
+  // Use root run's values (which are cumulative) instead of summing all runs
+  const totalTokens = rootRun?.total_tokens || 0;
+  const totalLatency =
+    rootRun?.start_time && rootRun?.end_time
+      ? new Date(rootRun.end_time) - new Date(rootRun.start_time)
+      : 0;
 
   return {
     totalRuns,
@@ -245,6 +330,6 @@ export const getTraceStats = (traceData) => {
     chainCalls,
     errors,
     totalTokens,
-    totalLatency: formatLatency(new Date(0), new Date(totalLatency)),
+    totalLatency: formatLatency(rootRun?.start_time, rootRun?.end_time),
   };
 };
