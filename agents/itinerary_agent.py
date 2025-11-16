@@ -57,7 +57,7 @@ class ItineraryAgent:
         activities: List[Activity],
         num_days: int
     ) -> List[List[Activity]]:
-        """Distribute activities across days.
+        """Distribute activities evenly across days using round-robin.
 
         Args:
             activities: List of activities to distribute
@@ -69,18 +69,27 @@ class ItineraryAgent:
         if not activities or num_days <= 0:
             return [[] for _ in range(max(1, num_days))]
 
-        # Simple distribution - aim for 2-3 activities per day
-        activities_per_day = max(1, len(activities) // num_days)
+        # Skip first and last day (arrival/departure), distribute across middle days
+        # If trip is 2 days or less, use all days
+        if num_days > 2:
+            activity_days = num_days - 2  # Skip first and last day
+            start_day = 1  # Start from day 2 (index 1)
+        else:
+            activity_days = num_days
+            start_day = 0
 
-        daily_activities = []
-        for day in range(num_days):
-            start_idx = day * activities_per_day
-            end_idx = start_idx + activities_per_day
-            if day == num_days - 1:
-                # Last day gets any remaining activities
-                daily_activities.append(activities[start_idx:])
-            else:
-                daily_activities.append(activities[start_idx:end_idx])
+        # Initialize empty lists for all days
+        daily_activities = [[] for _ in range(num_days)]
+
+        # Distribute activities round-robin across activity days
+        for idx, activity in enumerate(activities):
+            day_idx = start_day + (idx % activity_days)
+            daily_activities[day_idx].append(activity)
+
+        logger.info(
+            f"Distributed {len(activities)} activities across {num_days} days "
+            f"(using days {start_day + 1} to {start_day + activity_days})"
+        )
 
         return daily_activities
 

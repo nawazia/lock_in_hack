@@ -43,6 +43,34 @@ class TravelOrchestrator:
         # Build the orchestration graph
         self.graph = self._build_graph()
 
+    def _route_after_interface(self, state: Dict) -> str:
+        """Routing function to decide next step after interface agent.
+
+        Args:
+            state: Current state dict
+
+        Returns:
+            Next node name or END
+        """
+        # Check if we need user input
+        if state.get("needs_user_input", False):
+            logger.info("Routing: Waiting for user input")
+            return END
+
+        # Check if intent is complete
+        if state.get("metadata", {}).get("intent_complete", False):
+            logger.info("Routing: Intent complete, proceeding to flights")
+            return "flights"
+
+        # Fallback: if questions exist, wait for user input
+        if state.get("clarifying_questions") and len(state.get("clarifying_questions", [])) > 0:
+            logger.info("Routing: Has clarifying questions, waiting for user input")
+            return END
+
+        # Otherwise proceed to flights
+        logger.info("Routing: Proceeding to flights")
+        return "flights"
+
     def _build_graph(self):
         """Build the LangGraph workflow for travel planning orchestration."""
 
@@ -59,10 +87,21 @@ class TravelOrchestrator:
         workflow.add_node("itinerary", self._itinerary_node)
         workflow.add_node("audit", self._audit_node)
 
-        # Define the workflow pipeline
-        # Interface -> Flights & Hotels (parallel)
+        # Define the workflow pipeline with conditional routing
+        # Start with interface agent
         workflow.set_entry_point("interface")
-        workflow.add_edge("interface", "flights")
+
+        # After interface, use conditional routing
+        # If intent is complete -> go to flights
+        # If needs user input -> END (wait for user response)
+        workflow.add_conditional_edges(
+            "interface",
+            self._route_after_interface,
+            {
+                "flights": "flights",
+                END: END
+            }
+        )
 
         # After flights, go to hotels
         workflow.add_edge("flights", "hotels")
@@ -228,11 +267,12 @@ class TravelOrchestrator:
             return state
 
     @traceable(name="travel_orchestrator_process")
-    def process_query(self, query: str) -> dict:
+    def process_query(self, query: str, existing_state: dict = None) -> dict:
         """Process a travel planning query through the agent pipeline.
 
         Args:
             query: User's travel request
+            existing_state: Optional existing state from previous interaction
 
         Returns:
             Final state dict with itinerary and all intermediate results
@@ -240,31 +280,54 @@ class TravelOrchestrator:
         logger.info(f"Processing travel query: {query}")
 
         try:
-            # Initialize state
-            initial_state = {
-                "user_query": query,
-                "travel_intent": None,
-                "flights": [],
-                "hotels": [],
-                "budget_options": [],
-                "activities": [],
-                "ranked_options": [],
-                "final_itinerary": None,
-                "next_agent": None,
-                "completed_agents": [],
-                "metadata": {},
-                "clarifying_questions": []
-            }
+            # Initialize state or use existing state
+            if existing_state:
+                # Continue from existing state with new query
+                state = existing_state.copy()
+                state["user_query"] = query
+                state["needs_user_input"] = False  # Reset flag
+                logger.info("Continuing from existing state")
+            else:
+                # Initialize new state
+                state = {
+                    "user_query": query,
+                    "travel_intent": None,
+                    "conversation_history": [],
+                    "user_responses": {},
+                    "flights": [],
+                    "hotels": [],
+                    "budget_options": [],
+                    "activities": [],
+                    "ranked_options": [],
+                    "final_itinerary": None,
+                    "next_agent": None,
+                    "completed_agents": [],
+                    "metadata": {},
+                    "clarifying_questions": [],
+                    "needs_user_input": False
+                }
+                logger.info("Starting new conversation")
 
             # Run the graph
-            final_state = self.graph.invoke(initial_state)
+            final_state = self.graph.invoke(state)
 
-            logger.info("Travel planning pipeline complete")
+            logger.info("Travel planning pipeline step complete")
             return final_state
 
         except Exception as e:
             logger.error(f"Error in orchestrator: {e}")
             raise
+
+    def is_waiting_for_input(self, state: dict) -> bool:
+        """Check if the orchestrator is waiting for user input.
+
+        Args:
+            state: Current state
+
+        Returns:
+            True if waiting for user input
+        """
+        return state.get("needs_user_input", False) or len(state.get("clarifying_questions", [])) > 0
 
     def format_itinerary_output(self, final_state: dict) -> str:
         """Format the final itinerary as a readable string.

@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 def main():
-    """Run travel planning example."""
+    """Run travel planning example with interactive interface."""
 
     # Setup LangSmith tracing (optional)
     setup_langsmith(project_name="travel-planning-agents", enabled=True)
@@ -27,23 +27,7 @@ def main():
     print("=" * 80)
     print("  Multi-Agent Travel Planning System")
     print("  Powered by Valyu Search & LangChain")
-    print("=" * 80)
-    print()
-
-    # Example travel query
-    travel_query = """
-    I want to plan a trip to Paris for 1 week in December.
-    My budget is around $2500.
-    I'm interested in food, art, and culture.
-    I'd like to visit the Louvre and try authentic French cuisine.
-    Looking for a nice 4-star hotel near the city center.
-    """
-
-    print("User Query:")
-    print(travel_query)
-    print()
-    print("=" * 80)
-    print("Processing your travel request through the agent pipeline...")
+    print("  [Interactive Mode - Will ask clarifying questions]")
     print("=" * 80)
     print()
 
@@ -51,52 +35,117 @@ def main():
         # Initialize orchestrator
         orchestrator = TravelOrchestrator()
 
-        # Process the query through all agents
-        final_state = orchestrator.process_query(travel_query.strip())
+        # Start with initial query (can be incomplete)
+        initial_query = """
+        I want to plan a trip to Hong Kong.
+        """
 
+        print("Initial User Query:")
+        print(initial_query)
         print()
         print("=" * 80)
-        print("Pipeline Complete! Here's your travel plan:")
+        print("Processing your travel request...")
         print("=" * 80)
         print()
 
-        # Check if clarifying questions were generated
-        if final_state.get("clarifying_questions"):
-            print("CLARIFYING QUESTIONS:")
-            for i, question in enumerate(final_state["clarifying_questions"], 1):
-                print(f"  {i}. {question}")
-            print()
+        # Process the initial query
+        state = orchestrator.process_query(initial_query.strip())
 
-        # Format and display the itinerary
-        formatted_output = orchestrator.format_itinerary_output(final_state)
-        print(formatted_output)
-
-        # Show some statistics
-        print()
-        print("=" * 80)
-        print("PIPELINE STATISTICS:")
-        print("=" * 80)
-        metadata = final_state.get("metadata", {})
-        print(f"Flights searched: {metadata.get('flights_found', 0)}")
-        print(f"Hotels searched: {metadata.get('hotels_found', 0)}")
-        print(f"Budget options created: {metadata.get('budget_options_created', 0)}")
-        print(f"Activities found: {metadata.get('activities_found', 0)}")
-        print(f"Options ranked: {metadata.get('ranked_options_count', 0)}")
-        print(f"Completed agents: {', '.join(final_state.get('completed_agents', []))}")
-        print()
-
-        # Show alternative options if available
-        if final_state.get("ranked_options") and len(final_state["ranked_options"]) > 1:
+        # Interactive loop: continue until all information is collected
+        while orchestrator.is_waiting_for_input(state):
             print()
             print("=" * 80)
-            print("ALTERNATIVE OPTIONS:")
+            print("SYSTEM NEEDS MORE INFORMATION")
             print("=" * 80)
-            for i, option in enumerate(final_state["ranked_options"][1:4], 2):  # Show top 3 alternatives
-                print(f"\nOption #{option['rank']}:")
-                print(f"  {option['reasoning']}")
-                print(f"  Overall Score: {option['overall_score']:.1f}/100")
-                print(f"    Budget: {option['budget_score']:.1f} | Quality: {option['quality_score']:.1f}")
-                print(f"    Preferences: {option['preference_score']:.1f} | Efficiency: {option['efficiency_score']:.1f}")
+            print()
+
+            # Show clarifying questions
+            if state.get("clarifying_questions"):
+                print("Please provide the following information:")
+                for i, question in enumerate(state["clarifying_questions"], 1):
+                    print(f"  {i}. {question}")
+                print()
+
+            # Show what we have so far
+            if state.get("travel_intent"):
+                intent = state["travel_intent"]
+                print("Current Information:")
+                if intent.get("budget"):
+                    print(f"  ✓ Budget: {intent['budget']}")
+                if intent.get("timeframe"):
+                    print(f"  ✓ Timeframe: {intent['timeframe']}")
+                if intent.get("locations"):
+                    print(f"  ✓ Locations: {', '.join(intent['locations'])}")
+                if intent.get("interests"):
+                    print(f"  ✓ Interests: {', '.join(intent['interests'])}")
+
+                missing = state.get("metadata", {}).get("missing_fields", [])
+                if missing:
+                    print(f"\n  Missing: {', '.join(missing)}")
+                print()
+
+            # In a real interactive system, you would get user input here
+            # For this example, we'll simulate user responses
+            print("=" * 80)
+            print("SIMULATED USER RESPONSE:")
+            print("=" * 80)
+
+            # Simulate providing the missing information
+            user_response = """
+            My budget is around $4000.
+            I want to travel for 1 week during Christmas.
+            I'm interested in food, culture, and nightlife.
+            I want to visit popular spots like Victoria Peak and Tsim Sha Tsui, and stay in a 4/5-star hotel near Central.
+            """
+            print(user_response)
+            print()
+
+            # Continue processing with the user's response
+            state = orchestrator.process_query(user_response.strip(), existing_state=state)
+
+        # All information collected, proceed with planning
+        print()
+        print("=" * 80)
+        print("All information collected! Planning your trip...")
+        print("=" * 80)
+        print()
+
+        # Show conversation history
+        if state.get("conversation_history"):
+            print("CONVERSATION SUMMARY:")
+            print("-" * 80)
+            for msg in state["conversation_history"]:
+                role = msg.get("role", "unknown").upper()
+                content = msg.get("content", "")
+                print(f"{role}: {content[:100]}..." if len(content) > 100 else f"{role}: {content}")
+            print()
+
+        # If we have a final itinerary, display it
+        if state.get("final_itinerary"):
+            print()
+            print("=" * 80)
+            print("YOUR TRAVEL PLAN:")
+            print("=" * 80)
+            print()
+            formatted_output = orchestrator.format_itinerary_output(state)
+            print(formatted_output)
+
+            # Show statistics
+            print()
+            print("=" * 80)
+            print("PIPELINE STATISTICS:")
+            print("=" * 80)
+            metadata = state.get("metadata", {})
+            print(f"Flights searched: {metadata.get('flights_found', 0)}")
+            print(f"Hotels searched: {metadata.get('hotels_found', 0)}")
+            print(f"Budget options created: {metadata.get('budget_options_created', 0)}")
+            print(f"Activities found: {metadata.get('activities_found', 0)}")
+            print(f"Options ranked: {metadata.get('ranked_options_count', 0)}")
+            print(f"Completed agents: {', '.join(state.get('completed_agents', []))}")
+            print()
+        else:
+            print("Ready to proceed with trip planning!")
+            print("(In production, would now search for flights, hotels, activities, etc.)")
 
     except Exception as e:
         logger.error(f"Error processing travel query: {e}", exc_info=True)

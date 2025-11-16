@@ -25,11 +25,14 @@ class InterfaceAgent:
         self.parser = JsonOutputParser(pydantic_object=TravelIntent)
 
     @traceable(name="extract_travel_intent")
-    def extract_intent(self, user_query: str) -> TravelIntent:
+    def extract_intent(self, user_query: str, existing_intent: Optional[TravelIntent] = None,
+                      conversation_history: list = None) -> TravelIntent:
         """Extract structured travel intent from user's natural language query.
 
         Args:
             user_query: User's travel request in natural language
+            existing_intent: Previously extracted intent to merge with
+            conversation_history: Previous conversation context
 
         Returns:
             TravelIntent object with extracted information
@@ -37,9 +40,33 @@ class InterfaceAgent:
         try:
             logger.info(f"Extracting travel intent from query: {user_query}")
 
+            # Build context from conversation history
+            context = ""
+            if conversation_history:
+                context = "\n\nPrevious conversation:\n"
+                for msg in conversation_history[-5:]:  # Last 5 messages for context
+                    role = msg.get("role", "unknown")
+                    content = msg.get("content", "")
+                    context += f"{role}: {content}\n"
+
+            # If we have existing intent, include it in the prompt
+            existing_info = ""
+            if existing_intent:
+                existing_info = f"\n\nAlready collected information:\n"
+                if existing_intent.budget:
+                    existing_info += f"- Budget: {existing_intent.budget}\n"
+                if existing_intent.timeframe:
+                    existing_info += f"- Timeframe: {existing_intent.timeframe}\n"
+                if existing_intent.locations:
+                    existing_info += f"- Locations: {', '.join(existing_intent.locations)}\n"
+                if existing_intent.interests:
+                    existing_info += f"- Interests: {', '.join(existing_intent.interests)}\n"
+                if existing_intent.activities:
+                    existing_info += f"- Activities: {', '.join(existing_intent.activities)}\n"
+
             # Create prompt template for intent extraction
             prompt = ChatPromptTemplate.from_messages([
-                ("system", """You are a travel planning assistant that extracts structured information from user queries.
+                ("system", f"""You are a travel planning assistant that extracts structured information from user queries.
 
 Extract the following information from the user's travel request:
 - budget: Budget range or constraints (e.g., "$1000-2000", "budget-friendly", "luxury")
@@ -50,9 +77,15 @@ Extract the following information from the user's travel request:
 - travelers: Number of travelers (default: 1)
 - accommodation_preferences: Hotel preferences (e.g., "near beach", "4-star", "boutique hotels")
 
+{existing_info}
+
+IMPORTANT: Merge any new information from the current message with the existing information above.
+If the user provides an answer to a specific question, update that field accordingly.
+{context}
+
 Return the information as a JSON object. If information is not mentioned, use null or empty list.
 
-{format_instructions}"""),
+{{format_instructions}}"""),
                 ("user", "{query}")
             ])
 
@@ -89,7 +122,9 @@ Return the information as a JSON object. If information is not mentioned, use nu
 
         except Exception as e:
             logger.error(f"Error extracting travel intent: {e}")
-            # Return minimal intent on error
+            # Return existing intent or minimal intent on error
+            if existing_intent:
+                return existing_intent
             return TravelIntent(
                 locations=[],
                 interests=[],
@@ -111,24 +146,28 @@ Return the information as a JSON object. If information is not mentioned, use nu
         try:
             logger.info("Generating clarifying questions")
 
-            # Check for missing critical information
-            if not intent.locations or len(intent.locations) == 0:
-                questions.append("Where would you like to travel to?")
+            # Get missing fields from the intent
+            missing_fields = intent.get_missing_fields()
 
-            if not intent.timeframe:
-                questions.append("When are you planning to travel? (dates or duration)")
+            # Generate specific questions for each missing field
+            for field in missing_fields:
+                if field == "budget":
+                    questions.append("What is your budget for this trip? (e.g., $2000-3000, budget-friendly, luxury)")
+                elif field == "timeframe":
+                    questions.append("When are you planning to travel? Please provide dates or duration (e.g., Dec 20-27, 1 week in January)")
+                elif field == "locations":
+                    questions.append("Where would you like to travel to? Please specify city/cities or country/countries.")
+                elif field == "interests":
+                    questions.append("What are your main interests for this trip? (e.g., food, culture, adventure, relaxation, history, nature)")
 
-            if not intent.budget:
-                questions.append("What is your budget for this trip?")
-
+            # Additional questions for optional but useful fields
             if not intent.travelers or intent.travelers == 0:
                 questions.append("How many people will be traveling?")
 
-            # Ask about interests if none provided and locations are specified
-            if intent.locations and (not intent.interests or len(intent.interests) == 0):
-                questions.append("What are your main interests for this trip? (e.g., food, culture, adventure, relaxation)")
+            if intent.locations and not intent.accommodation_preferences:
+                questions.append("Do you have any hotel preferences? (e.g., near city center, 4-star, boutique)")
 
-            logger.info(f"Generated {len(questions)} clarifying questions")
+            logger.info(f"Generated {len(questions)} clarifying questions for missing fields: {missing_fields}")
             return questions
 
         except Exception as e:
@@ -145,21 +184,58 @@ Return the information as a JSON object. If information is not mentioned, use nu
         Returns:
             Updated state with extracted travel intent and clarifying questions
         """
-        # Extract travel intent from user query
-        intent = self.extract_intent(state.user_query)
+        # Extract travel intent from user query, merging with existing intent if available
+        intent = self.extract_intent(
+            state.user_query,
+            existing_intent=state.travel_intent,
+            conversation_history=state.conversation_history
+        )
         state.travel_intent = intent
 
-        # Generate clarifying questions if needed
-        questions = self.generate_clarifying_questions(intent)
-        state.clarifying_questions = questions
+        # Add current query to conversation history
+        state.conversation_history.append({
+            "role": "user",
+            "content": state.user_query
+        })
 
-        # Mark this agent as completed
-        state.completed_agents.append("interface")
+        # Check if intent is complete
+        if intent.is_complete():
+            # All required information collected
+            state.needs_user_input = False
+            state.clarifying_questions = []
+            state.metadata["intent_complete"] = True
+            state.metadata["missing_fields"] = []
+
+            # Add confirmation message to conversation
+            state.conversation_history.append({
+                "role": "assistant",
+                "content": "Great! I have all the information needed. Let me start planning your trip..."
+            })
+
+            logger.info(f"Interface agent completed. Intent is COMPLETE: {intent}")
+
+        else:
+            # Generate clarifying questions for missing information
+            questions = self.generate_clarifying_questions(intent)
+            state.clarifying_questions = questions
+            state.needs_user_input = True
+            state.metadata["intent_complete"] = False
+            state.metadata["missing_fields"] = intent.get_missing_fields()
+
+            # Add questions to conversation history
+            questions_text = "\n".join([f"{i+1}. {q}" for i, q in enumerate(questions)])
+            state.conversation_history.append({
+                "role": "assistant",
+                "content": f"I need some more information to plan your trip:\n{questions_text}"
+            })
+
+            logger.info(f"Interface agent waiting for input. Missing fields: {intent.get_missing_fields()}")
+
+        # Mark this agent as completed (or re-run if needed)
+        if "interface" not in state.completed_agents:
+            state.completed_agents.append("interface")
 
         # Add metadata
         state.metadata["intent_extraction_complete"] = True
-        state.metadata["needs_clarification"] = len(questions) > 0
-
-        logger.info(f"Interface agent completed. Intent: {intent}, Questions: {len(questions)}")
 
         return state

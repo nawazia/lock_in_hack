@@ -28,6 +28,45 @@ class TravelIntent(BaseModel):
             }
         }
 
+    def is_complete(self) -> bool:
+        """Check if all required fields are present for planning.
+
+        Required fields:
+        - Budget
+        - Timeframe
+        - Locations
+        - Interests
+        - Activities (optional but good to have)
+
+        Returns:
+            True if all required information is present
+        """
+        has_budget = bool(self.budget)
+        has_timeframe = bool(self.timeframe)
+        has_locations = bool(self.locations and len(self.locations) > 0)
+        has_interests = bool(self.interests and len(self.interests) > 0)
+
+        return has_budget and has_timeframe and has_locations and has_interests
+
+    def get_missing_fields(self) -> List[str]:
+        """Get list of missing required fields.
+
+        Returns:
+            List of field names that are missing or incomplete
+        """
+        missing = []
+
+        if not self.budget:
+            missing.append("budget")
+        if not self.timeframe:
+            missing.append("timeframe")
+        if not self.locations or len(self.locations) == 0:
+            missing.append("locations")
+        if not self.interests or len(self.interests) == 0:
+            missing.append("interests")
+
+        return missing
+
 
 class Flight(BaseModel):
     """Flight option."""
@@ -202,6 +241,8 @@ class TravelPlanningState(BaseModel):
     # User input
     user_query: str = Field(..., description="Original user request")
     travel_intent: Optional[TravelIntent] = Field(None, description="Extracted travel intent")
+    conversation_history: List[Dict[str, str]] = Field(default_factory=list, description="User-agent conversation history")
+    user_responses: Dict[str, str] = Field(default_factory=dict, description="User responses to questions")
 
     # Agent outputs
     flights: List[Flight] = Field(default_factory=list)
@@ -216,6 +257,7 @@ class TravelPlanningState(BaseModel):
     completed_agents: List[str] = Field(default_factory=list, description="Agents that have completed")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
     clarifying_questions: List[str] = Field(default_factory=list, description="Questions for user")
+    needs_user_input: bool = Field(False, description="Whether system is waiting for user input")
 
     class Config:
         arbitrary_types_allowed = True
