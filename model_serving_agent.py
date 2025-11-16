@@ -4,11 +4,21 @@ from config.llm_setup import get_llm_openrouter
 
 llm = get_llm_openrouter(model="anthropic/claude-3.5-haiku")
 
-model_selection = {
+# Model selections by provider
+model_selection_claude = {
     "reasoning_model": "anthropic/claude-3.7-sonnet:thinking",
     "general_purpose_model": "anthropic/claude-3.7-sonnet",
     "small_model": "anthropic/claude-3.5-haiku"
 }
+
+model_selection_openai = {
+    "reasoning_model": "openai/o1-preview",  # Best reasoning
+    "general_purpose_model": "openai/gpt-4-turbo",  # Balanced performance
+    "small_model": "openai/gpt-3.5-turbo"  # Cost-effective
+}
+
+# Default to Claude (can be changed)
+model_selection = model_selection_claude
 
 model_size_rank = {
     "small_model": 0,            # most preferred
@@ -175,14 +185,49 @@ def compare_llm_selection(
     return best_model
 
 
-def dynamic_model_router(agent_description: str, model_profiles=model_profiles, 
-                         default="dynamic", model_selection=model_selection) -> str:
+def dynamic_model_router(agent_description: str, model_profiles=model_profiles,
+                         default="dynamic", model_selection=None, provider="claude") -> str:
+    '''
+    Takes in system prompt of agent and outputs a string of the model code to be input into the openrouter model caller.
+
+    Args:
+        agent_description: Description of the agent's requirements
+        model_profiles: Capability profiles for model types
+        default: Selection strategy ("dynamic", "max", "mid", "min")
+        model_selection: Custom model selection dict (optional)
+        provider: "claude", "openai", or "auto" to choose provider
+
+    Returns:
+        Model identifier string for OpenRouter (e.g., "anthropic/claude-3.5-haiku")
+
+    Example:
+        llm = get_llm_openrouter(model=dynamic_model_router(agent_prompt, provider="openai"))
+    '''
+    # Select provider-specific models if not provided
+    if model_selection is None:
+        if provider == "openai":
+            model_selection = model_selection_openai
+        elif provider == "claude":
+            model_selection = model_selection_claude
+        elif provider == "auto":
+            # Auto-select based on default strategy
+            # For cost optimization, prefer OpenAI (GPT-3.5 is cheaper than Haiku)
+            # For reasoning, prefer Claude (Claude Thinking is better)
+            if default == "min":
+                model_selection = model_selection_openai  # GPT-3.5 is very cheap
+            elif default == "max":
+                model_selection = model_selection_claude  # Claude Thinking is best
+            else:
+                model_selection = model_selection_claude  # Default to Claude
+        else:
+            model_selection = model_selection_claude  # Fallback to Claude
+
     if default == "max":
         return model_selection["reasoning_model"]
-    
+
     if default == "mid":
         return model_selection["general_purpose_model"]
-    
+
     if default == "min":
         return model_selection["small_model"]
 
@@ -191,7 +236,7 @@ def dynamic_model_router(agent_description: str, model_profiles=model_profiles,
         llm_type_choice = compare_llm_selection(agent_requirements, model_profiles)
         chosen_model = model_selection[llm_type_choice]
         return chosen_model
-    
+
     return None
 
 

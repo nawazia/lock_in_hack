@@ -32,7 +32,25 @@ def main():
     print()
 
     try:
-        # Initialize orchestrator
+        # Optional: Let user choose optimization preference upfront
+        # If not provided, the interface agent will ask during the conversation
+        print("LLM Optimization Options:")
+        print("  1. Auto (default) - System chooses best models")
+        print("  2. Cost - Minimize API costs (uses cheaper models)")
+        print("  3. Latency - Maximize performance (uses powerful models)")
+        print("  4. Carbon - Minimize environmental impact")
+        print()
+
+        # For this example, we'll use default and let interface agent ask
+        # You can uncomment below to choose upfront:
+        # from models.travel_schemas import OptimizationPreference
+        # from config.agent_model_config import ModelProvider
+        # orchestrator = TravelOrchestrator(
+        #     optimization_preference=OptimizationPreference.COST,
+        #     provider_preference=ModelProvider.AUTO
+        # )
+
+        # Initialize orchestrator with defaults (interface agent will ask user)
         orchestrator = TravelOrchestrator()
 
         # Start with initial query (can be incomplete)
