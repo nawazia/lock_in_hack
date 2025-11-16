@@ -16,7 +16,14 @@ from agents.itinerary_agent import ItineraryAgent
 from agents.audit_agent import AuditAgent
 from models.travel_schemas import TravelPlanningState, OptimizationPreference
 from utils.observability_collector import ObservabilityCollector
-from config.llm_setup import get_llm
+from config.llm_setup import get_llm, get_llm_openrouter
+from config.agent_model_config import (
+    AGENT_DESCRIPTIONS,
+    ModelProvider,
+    get_model_strategy,
+    get_provider_for_optimization,
+)
+from model_serving_agent import dynamic_model_router
 
 logger = logging.getLogger(__name__)
 
@@ -24,46 +31,70 @@ logger = logging.getLogger(__name__)
 class TravelOrchestrator:
     """Orchestrator that coordinates multiple agents for travel planning."""
 
-    def __init__(self, llm=None, optimization_preference: OptimizationPreference = OptimizationPreference.DEFAULT):
+    def __init__(self, llm=None, optimization_preference: OptimizationPreference = OptimizationPreference.DEFAULT, provider_preference: ModelProvider = ModelProvider.AUTO):
         """Initialize the travel orchestrator.
 
         Args:
-            llm: Language model to use for agents that need it
-            optimization_preference: User's preference for LLM optimization (currently unused, all agents use Bedrock)
+            llm: Language model to use for agents that need it (optional, will use dynamic routing if not provided)
+            optimization_preference: User's preference for LLM optimization
+            provider_preference: Preferred LLM provider (Claude, OpenAI, or Auto)
         """
         self.optimization_preference = optimization_preference
-        self.llm = llm or get_llm()
+        self.provider_preference = provider_preference
 
-        logger.info(f"Initializing orchestrator with Bedrock LLM")
+        # Get model selection strategy and provider
+        model_strategy = get_model_strategy(optimization_preference)
+        provider = get_provider_for_optimization(optimization_preference, provider_preference)
 
-        # Initialize all agents with Bedrock LLM
-        # Using get_llm() which defaults to Bedrock
-        interface_llm = get_llm()
-        self.interface_agent = InterfaceAgent(llm=interface_llm)
-        logger.info(f"Interface agent initialized with Bedrock LLM")
+        logger.info(f"Initializing orchestrator with strategy: {model_strategy}, provider: {provider}")
 
-        flight_llm = get_llm()
-        self.flight_agent = FlightAgent(llm=flight_llm)
-        logger.info(f"Flight agent initialized with Bedrock LLM")
+        # Initialize all agents with dynamic model routing via OpenRouter
+        interface_model = dynamic_model_router(
+            AGENT_DESCRIPTIONS["interface"],
+            default=model_strategy,
+            provider=provider
+        )
+        self.interface_agent = InterfaceAgent(llm=get_llm_openrouter(model=interface_model))
+        logger.info(f"Interface agent initialized with {interface_model}")
 
-        hotel_llm = get_llm()
-        self.hotel_agent = HotelAgent(llm=hotel_llm)
-        logger.info(f"Hotel agent initialized with Bedrock LLM")
+        flight_model = dynamic_model_router(
+            AGENT_DESCRIPTIONS["flight"],
+            default=model_strategy,
+            provider=provider
+        )
+        self.flight_agent = FlightAgent(llm=get_llm_openrouter(model=flight_model))
+        logger.info(f"Flight agent initialized with {flight_model}")
+
+        hotel_model = dynamic_model_router(
+            AGENT_DESCRIPTIONS["hotel"],
+            default=model_strategy,
+            provider=provider
+        )
+        self.hotel_agent = HotelAgent(llm=get_llm_openrouter(model=hotel_model))
+        logger.info(f"Hotel agent initialized with {hotel_model}")
 
         # Budget agent doesn't need LLM - it's deterministic
         self.budget_agent = BudgetAgent()
 
-        activities_llm = get_llm()
-        self.activities_agent = ActivitiesAgent(llm=activities_llm)
-        logger.info(f"Activities agent initialized with Bedrock LLM")
+        activities_model = dynamic_model_router(
+            AGENT_DESCRIPTIONS["activities"],
+            default=model_strategy,
+            provider=provider
+        )
+        self.activities_agent = ActivitiesAgent(llm=get_llm_openrouter(model=activities_model))
+        logger.info(f"Activities agent initialized with {activities_model}")
 
         # Ranking agent doesn't need LLM - it's deterministic
         self.ranking_agent = RankingAgent()
 
         # Itinerary agent uses LLM for creating detailed plans
-        itinerary_llm = get_llm()
-        self.itinerary_agent = ItineraryAgent(llm=itinerary_llm)
-        logger.info(f"Itinerary agent initialized with Bedrock LLM")
+        itinerary_model = dynamic_model_router(
+            AGENT_DESCRIPTIONS["itinerary"],
+            default=model_strategy,
+            provider=provider
+        )
+        self.itinerary_agent = ItineraryAgent(llm=get_llm_openrouter(model=itinerary_model))
+        logger.info(f"Itinerary agent initialized with {itinerary_model}")
 
         # Audit agent doesn't need LLM - it's deterministic
         self.audit_agent = AuditAgent()
