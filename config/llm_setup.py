@@ -52,5 +52,13 @@ def get_llm(provider: str = None):
         return get_llm_bedrock()
     elif provider == "openai":
         return get_llm_openai()
-    else:  # default to bedrock
-        return get_llm_bedrock()
+    
+
+def get_llm_openrouter(model="anthropic/claude-3.5-sonnet"):
+    return ChatOpenAI(
+        model=model,  # OpenRouter model slug
+        api_key=os.getenv("OPENROUTER_API_KEY"),
+        base_url="https://openrouter.ai/api/v1",
+        temperature=0.2,
+    )
+
