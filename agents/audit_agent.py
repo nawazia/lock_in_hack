@@ -16,6 +16,8 @@ class AuditAgent:
         """Initialize the audit agent."""
         self.issues_found = []
         self.fixes_applied = []
+        self.critical_issues = []  # Issues that require re-processing
+        self.issue_types = []  # Types of issues found for routing
 
         # Known booking site domains
         self.booking_domains = [
@@ -133,9 +135,11 @@ class AuditAgent:
         if expected_lower in location_lower or location_lower in expected_lower:
             return location, True
 
-        # Location mismatch
+        # Location mismatch - this is critical!
         issue = f"Location mismatch: Found '{location}' but expected '{expected_location}'"
         self.issues_found.append(issue)
+        self.critical_issues.append(issue)
+        self.issue_types.append("location_mismatch")
         return location, False
 
     def validate_price(self, price: float, item_name: str, max_reasonable: float = 10000) -> float:
@@ -166,16 +170,18 @@ class AuditAgent:
 
         return price
 
-    def validate_date_consistency(self, itinerary: Itinerary) -> bool:
+    def validate_date_consistency(self, itinerary: Itinerary, auto_fix: bool = True) -> bool:
         """Validate dates are consistent across the itinerary.
 
         Args:
             itinerary: Itinerary to validate
+            auto_fix: Whether to automatically fix date issues
 
         Returns:
             True if dates are consistent
         """
         issues = []
+        from datetime import timedelta
 
         # Check flight arrival matches itinerary start
         flight = itinerary.budget_option.flight_outbound
@@ -188,6 +194,43 @@ class AuditAgent:
             if days_diff > 2:
                 issue = f"Flight arrives {arrival_date} but itinerary starts {itinerary.start_date} ({days_diff} days difference)"
                 issues.append(issue)
+
+                # Mark as critical issue that needs re-processing
+                self.critical_issues.append(issue)
+                self.issue_types.append("date_consistency")
+
+                # Attempt to auto-fix by adjusting itinerary dates to match flight
+                if auto_fix:
+                    try:
+                        arrival_datetime = self._parse_date(arrival_date)
+                        old_start = itinerary.start_date
+                        old_end = itinerary.end_date
+
+                        # Adjust start date to match flight arrival
+                        itinerary.start_date = arrival_date
+
+                        # Adjust end date to maintain same trip duration
+                        old_duration = (self._parse_date(old_end) - self._parse_date(old_start)).days
+                        new_end_datetime = arrival_datetime + timedelta(days=old_duration)
+                        itinerary.end_date = new_end_datetime.strftime("%Y-%m-%d")
+
+                        # Update daily plans dates
+                        for i, day_plan in enumerate(itinerary.daily_plans):
+                            new_day_date = arrival_datetime + timedelta(days=i)
+                            day_plan.date = new_day_date.strftime("%Y-%m-%d")
+
+                        fix_msg = f"Adjusted itinerary dates to match flight arrival: {old_start} → {itinerary.start_date}, {old_end} → {itinerary.end_date}"
+                        self.fixes_applied.append(fix_msg)
+                        logger.info(f"Auto-fixed date consistency: {fix_msg}")
+
+                        # Remove from critical issues since we fixed it
+                        self.critical_issues.remove(issue)
+                        if "date_consistency" in self.issue_types:
+                            self.issue_types.remove("date_consistency")
+
+                        return True
+                    except Exception as e:
+                        logger.error(f"Failed to auto-fix date consistency: {e}")
 
         if issues:
             self.issues_found.extend(issues)
@@ -217,6 +260,8 @@ class AuditAgent:
         logger.info("Auditing itinerary for errors and inconsistencies...")
         self.issues_found = []
         self.fixes_applied = []
+        self.critical_issues = []
+        self.issue_types = []
 
         # Validate hotel
         hotel = itinerary.budget_option.hotel
@@ -339,9 +384,12 @@ class AuditAgent:
         state.metadata["audit_fixes_applied"] = len(self.fixes_applied)
         state.metadata["audit_issues"] = self.issues_found
         state.metadata["audit_fixes"] = self.fixes_applied
+        state.metadata["critical_issues"] = self.critical_issues  # For routing decisions
+        state.metadata["issue_types"] = self.issue_types  # For routing to correct agent
 
         state.completed_agents.append("audit")
 
         logger.info(f"Audit agent completed. Found {len(self.issues_found)} issues, applied {len(self.fixes_applied)} fixes")
+        logger.info(f"Critical issues remaining: {len(self.critical_issues)}, Types: {set(self.issue_types)}")
 
         return state

@@ -200,6 +200,52 @@ class TravelOrchestrator:
         logger.info("Routing: Proceeding to flights")
         return "flights"
 
+    def _route_after_audit(self, state: Dict) -> str:
+        """Routing function to decide next step after audit agent.
+
+        Args:
+            state: Current state dict
+
+        Returns:
+            Next node name or END
+        """
+        metadata = state.get("metadata", {})
+        iteration_count = state.get("iteration_count", 0)
+        max_iterations = state.get("max_iterations", 3)
+
+        # Check if there are unresolved issues
+        audit_issues = metadata.get("audit_issues", [])
+        critical_issues = metadata.get("critical_issues", [])
+
+        # If no critical issues or max iterations reached, we're done
+        if not critical_issues or iteration_count >= max_iterations:
+            if iteration_count >= max_iterations:
+                logger.warning(f"Routing: Max iterations ({max_iterations}) reached, ending pipeline")
+            else:
+                logger.info("Routing: No critical issues found, pipeline complete")
+            return END
+
+        # Increment iteration counter
+        state["iteration_count"] = iteration_count + 1
+        logger.info(f"Routing: Critical issues found, starting iteration {state['iteration_count']}/{max_iterations}")
+
+        # Determine which agent to route back to based on issue types
+        issue_types = metadata.get("issue_types", [])
+
+        if "date_consistency" in issue_types:
+            logger.info("Routing: Date consistency issues found, re-running itinerary creation")
+            return "itinerary"
+        elif "location_mismatch" in issue_types:
+            logger.info("Routing: Location mismatch found, re-running from flight search")
+            return "flights"
+        elif "price_validation" in issue_types:
+            logger.info("Routing: Price issues found, re-running budget matching")
+            return "budget"
+        else:
+            # Default: re-run itinerary for other issues
+            logger.info("Routing: Generic issues found, re-running itinerary creation")
+            return "itinerary"
+
     def _build_graph(self):
         """Build the LangGraph workflow for travel planning orchestration."""
 
@@ -250,8 +296,19 @@ class TravelOrchestrator:
         # After itinerary, audit for errors
         workflow.add_edge("itinerary", "audit")
 
-        # Audit is the end
-        workflow.add_edge("audit", END)
+        # After audit, use conditional routing
+        # If critical issues found -> route back to appropriate agent
+        # If no critical issues or max iterations reached -> END
+        workflow.add_conditional_edges(
+            "audit",
+            self._route_after_audit,
+            {
+                "flights": "flights",
+                "budget": "budget",
+                "itinerary": "itinerary",
+                END: END
+            }
+        )
 
         # Compile the graph
         app = workflow.compile()
@@ -451,7 +508,9 @@ class TravelOrchestrator:
                         "observability_collector": collector
                     },
                     "clarifying_questions": [],
-                    "needs_user_input": False
+                    "needs_user_input": False,
+                    "iteration_count": 0,
+                    "max_iterations": 3
                 }
                 logger.info("Starting new conversation with observability collection")
 
@@ -582,14 +641,31 @@ class TravelOrchestrator:
                 output.append(f"  • {tip}")
             output.append("")
 
-        # Audit results
+        # Show iteration information if any iterations occurred
+        iteration_count = final_state.get("iteration_count", 0)
+        if iteration_count > 0:
+            output.append("FEEDBACK LOOP ITERATIONS:")
+            output.append(f"  System ran {iteration_count} feedback iteration(s) to resolve issues")
+            output.append("")
+
+        # Audit results (show if there were any issues found OR fixes applied)
         metadata = final_state.get("metadata", {})
-        if metadata.get("audit_issues_found", 0) > 0:
+        if metadata.get("audit_issues_found", 0) > 0 or metadata.get("audit_fixes_applied", 0) > 0:
             output.append("AUDIT RESULTS:")
             output.append(f"  Issues Found: {metadata.get('audit_issues_found', 0)}")
             output.append(f"  Fixes Applied: {metadata.get('audit_fixes_applied', 0)}")
+            output.append("")
+
+            # Show the actual issues found
+            if metadata.get("audit_issues"):
+                output.append("  Issues Detected:")
+                for issue in metadata.get("audit_issues", []):
+                    output.append(f"    ⚠ {issue}")
+                output.append("")
+
+            # Show fixes applied
             if metadata.get("audit_fixes"):
-                output.append("  Fixes:")
+                output.append("  Fixes Applied:")
                 for fix in metadata.get("audit_fixes", []):
                     output.append(f"    ✓ {fix}")
             output.append("")

@@ -275,5 +275,9 @@ class TravelPlanningState(BaseModel):
     clarifying_questions: List[str] = Field(default_factory=list, description="Questions for user")
     needs_user_input: bool = Field(False, description="Whether system is waiting for user input")
 
+    # Iteration control for feedback loops
+    iteration_count: int = Field(0, description="Number of iterations through the pipeline")
+    max_iterations: int = Field(3, description="Maximum number of iterations to prevent infinite loops")
+
     class Config:
         arbitrary_types_allowed = True
