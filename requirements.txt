@@ -16,7 +16,10 @@ faiss-cpu>=1.7.4  # Alternative: faiss-gpu for GPU support
 valyu>=0.1.0
 
 # Hallucination Detection (EDFL framework)
-# Note: hallbayes is installed from ../hallbayes directory
+# Install hallbayes from local directory:
+# pip install -e ../hallbayes
+# Or install from git:
+# pip install git+https://github.com/leochlon/hallbayes.git
 # It requires: openai>=1.0.0 (already included above)
 # Optional backends: anthropic, transformers, torch, ollama, requests
 

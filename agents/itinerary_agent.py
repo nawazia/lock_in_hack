@@ -282,57 +282,208 @@ class ItineraryAgent:
 
             logger.info(f"Created itinerary: {itinerary.title}")
 
-            # Validate itinerary consistency with EDFL (closed-book validation)
-            if self.edfl_validator:
-                try:
-                    # Create a summary for validation
-                    summary = {
-                        "title": itinerary.title,
-                        "destination": destination,
-                        "dates": f"{itinerary.start_date} to {itinerary.end_date}",
-                        "total_days": total_days,
-                        "nights": nights,
-                        "hotel": budget_option.hotel.name,
-                        "hotel_location": budget_option.hotel.location,
-                        "flight": f"{budget_option.flight_outbound.airline} {budget_option.flight_outbound.flight_number}",
-                        "departure_time": budget_option.flight_outbound.departure_time,
-                        "arrival_time": budget_option.flight_outbound.arrival_time,
-                        "num_activities": len(activities),
-                        "total_cost": total_estimated_cost
-                    }
-
-                    should_use, risk_bound, rationale = self.edfl_validator.validate_closed_book(
-                        question=f"Review this {total_days}-day travel itinerary for {destination}. Is it internally consistent (dates align, locations match, logistics are feasible)?",
-                        llm_output=json.dumps(summary, indent=2)
-                    )
-
-                    # Store EDFL metrics in itinerary metadata
-                    itinerary.edfl_validation = {
-                        "risk_of_hallucination": risk_bound,
-                        "validation_passed": should_use,
-                        "confidence": "high" if risk_bound < 0.05 else ("medium" if risk_bound < 0.5 else "low"),
-                        "rationale": rationale[:200]
-                    }
-
-                    if not should_use:
-                        logger.warning(f"EDFL validation flagged itinerary inconsistency (RoH={risk_bound:.3f})")
-                        logger.warning(f"Rationale: {rationale}")
-                        # Note: We don't reject the itinerary, but flag it in metadata for review
-                        # The audit agent will handle fixing issues
-                    else:
-                        logger.info(f"EDFL validation PASSED for itinerary (RoH={risk_bound:.3f})")
-
-                except Exception as e:
-                    logger.error(f"EDFL validation error for itinerary: {e}")
-                    itinerary.edfl_validation = {
-                        "error": str(e)
-                    }
-
             return itinerary
 
         except Exception as e:
             logger.error(f"Error creating itinerary: {e}")
             raise
+
+    @traceable(name="validate_final_itinerary")
+    def validate_final_itinerary(
+        self,
+        itinerary: Itinerary,
+        all_flights: List,
+        all_hotels: List,
+        all_activities: List
+    ) -> Itinerary:
+        """Validate the final itinerary against all collected evidence using EDFL.
+
+        This is the critical final validation step that ensures the itinerary
+        presented to the user is grounded in actual search results with no hallucinations.
+
+        Args:
+            itinerary: Generated itinerary to validate
+            all_flights: All flights collected from search
+            all_hotels: All hotels collected from search
+            all_activities: All activities collected from search
+
+        Returns:
+            Itinerary with EDFL validation metadata added
+        """
+        if not self.edfl_validator:
+            logger.info("EDFL validator not available, skipping final validation")
+            return itinerary
+
+        try:
+            logger.info("=== FINAL EDFL VALIDATION: Verifying itinerary against collected evidence ===")
+
+            # Build comprehensive evidence bundle from all collected data
+            evidence_parts = []
+
+            # Flight evidence
+            evidence_parts.append("=== COLLECTED FLIGHT OPTIONS ===")
+            for i, flight in enumerate(all_flights[:10], 1):  # Top 10 flights
+                flight_info = f"""Flight {i}:
+- Airline: {flight.airline}
+- Flight Number: {flight.flight_number}
+- Route: {flight.departure_airport} → {flight.arrival_airport}
+- Departure: {flight.departure_time}
+- Arrival: {flight.arrival_time}
+- Duration: {flight.duration}
+- Price: ${flight.price:.2f}
+- Stops: {flight.stops}
+- Booking URL: {flight.booking_url or 'N/A'}"""
+                evidence_parts.append(flight_info)
+
+            # Hotel evidence
+            evidence_parts.append("\n=== COLLECTED HOTEL OPTIONS ===")
+            for i, hotel in enumerate(all_hotels[:10], 1):  # Top 10 hotels
+                hotel_info = f"""Hotel {i}:
+- Name: {hotel.name}
+- Location: {hotel.location}
+- Address: {hotel.address or 'N/A'}
+- Star Rating: {hotel.star_rating or 'N/A'}/5
+- User Rating: {hotel.rating or 'N/A'}/5
+- Price per Night: ${hotel.price_per_night:.2f}
+- Amenities: {', '.join(hotel.amenities[:5]) if hotel.amenities else 'N/A'}
+- Booking URL: {hotel.booking_url or 'N/A'}"""
+                evidence_parts.append(hotel_info)
+
+            # Activity evidence
+            evidence_parts.append("\n=== COLLECTED ACTIVITY OPTIONS ===")
+            for i, activity in enumerate(all_activities[:15], 1):  # Top 15 activities
+                activity_price = f"${activity.price:.2f}" if activity.price else "N/A"
+                activity_info = f"""Activity {i}:
+- Name: {activity.name}
+- Description: {activity.description[:100]}...
+- Location: {activity.location}
+- Category: {activity.category}
+- Duration: {activity.duration or 'N/A'}
+- Price: {activity_price}
+- Rating: {activity.rating or 'N/A'}/5
+- Booking URL: {activity.booking_url or 'N/A'}"""
+                evidence_parts.append(activity_info)
+
+            evidence = "\n".join(evidence_parts)
+
+            # Build itinerary claims to verify
+            claims_parts = []
+
+            claims_parts.append("=== FINAL ITINERARY TO VERIFY ===")
+            claims_parts.append(f"Title: {itinerary.title}")
+            claims_parts.append(f"Destinations: {', '.join(itinerary.destinations)}")
+            claims_parts.append(f"Dates: {itinerary.start_date} to {itinerary.end_date} ({itinerary.total_days} days)")
+            claims_parts.append(f"Total Cost: ${itinerary.total_estimated_cost:.2f}")
+
+            # Selected flight details
+            flight = itinerary.budget_option.flight_outbound
+            claims_parts.append(f"\nSELECTED FLIGHT:")
+            claims_parts.append(f"- Airline: {flight.airline}")
+            claims_parts.append(f"- Flight Number: {flight.flight_number}")
+            claims_parts.append(f"- Route: {flight.departure_airport} → {flight.arrival_airport}")
+            claims_parts.append(f"- Departure: {flight.departure_time}")
+            claims_parts.append(f"- Arrival: {flight.arrival_time}")
+            claims_parts.append(f"- Duration: {flight.duration}")
+            claims_parts.append(f"- Price: ${flight.price:.2f}")
+            claims_parts.append(f"- Booking URL: {flight.booking_url or 'N/A'}")
+
+            # Selected hotel details
+            hotel = itinerary.budget_option.hotel
+            claims_parts.append(f"\nSELECTED HOTEL:")
+            claims_parts.append(f"- Name: {hotel.name}")
+            claims_parts.append(f"- Location: {hotel.location}")
+            claims_parts.append(f"- Star Rating: {hotel.star_rating or 'N/A'}/5")
+            claims_parts.append(f"- User Rating: {hotel.rating or 'N/A'}/5")
+            claims_parts.append(f"- Price per Night: ${hotel.price_per_night:.2f}")
+            claims_parts.append(f"- Total Hotel Cost for {itinerary.budget_option.nights} nights: ${hotel.price_per_night * itinerary.budget_option.nights:.2f}")
+            claims_parts.append(f"- Booking URL: {hotel.booking_url or 'N/A'}")
+
+            # Selected activities
+            claims_parts.append(f"\nSELECTED ACTIVITIES ({len(itinerary.daily_plans)} days):")
+            total_activity_cost = 0
+            for day_plan in itinerary.daily_plans:
+                claims_parts.append(f"\nDay {day_plan.day_number} ({day_plan.date}):")
+                claims_parts.append(f"  Notes: {day_plan.notes}")
+                if day_plan.activities:
+                    for act in day_plan.activities:
+                        act_price = f"${act.price:.2f}" if act.price else "$0.00"
+                        claims_parts.append(f"  - {act.name} ({act_price})")
+                        claims_parts.append(f"    Category: {act.category}, Location: {act.location}")
+                        if act.price:
+                            total_activity_cost += act.price
+                else:
+                    claims_parts.append(f"  - No activities scheduled")
+                claims_parts.append(f"  Day Cost: ${day_plan.estimated_cost:.2f}")
+
+            claims_parts.append(f"\nTOTAL BREAKDOWN:")
+            claims_parts.append(f"- Flight Cost: ${flight.price:.2f}")
+            claims_parts.append(f"- Hotel Cost ({itinerary.budget_option.nights} nights): ${hotel.price_per_night * itinerary.budget_option.nights:.2f}")
+            claims_parts.append(f"- Activities Cost: ${total_activity_cost:.2f}")
+            claims_parts.append(f"- TOTAL: ${itinerary.total_estimated_cost:.2f}")
+
+            claims = "\n".join(claims_parts)
+
+            # Run evidence-based EDFL validation
+            logger.info("Running EDFL evidence-based validation on final itinerary...")
+
+            should_use, risk_bound, rationale = self.edfl_validator.validate_evidence_based(
+                task_description="""Verify the FINAL ITINERARY against collected search results.
+
+This is the FINAL validation before presenting to the user. Check that:
+1. Flight details (airline, number, times, price, URL) match the collected flight options
+2. Hotel details (name, location, rating, price, URL) match the collected hotel options
+3. Activity details (name, price, category, location) match the collected activity options
+4. All prices are accurately extracted from the evidence
+5. All URLs, names, and dates are correctly copied from source data
+6. Total cost calculations are accurate
+7. No information is fabricated or hallucinated
+
+This is CRITICAL - the user will make booking decisions based on this itinerary.""",
+                evidence=evidence,
+                llm_output=claims,
+                n_samples=5,  # More samples for final validation
+                m=6  # More skeleton prompts for higher confidence
+            )
+
+            # Store comprehensive EDFL metrics
+            itinerary.edfl_validation = {
+                "risk_of_hallucination": risk_bound,
+                "validation_passed": should_use,
+                "confidence": "high" if risk_bound < 0.05 else ("medium" if risk_bound < 0.5 else "low"),
+                "rationale": rationale,
+                "validation_type": "evidence_based_final",
+                "evidence_items": {
+                    "flights_checked": min(len(all_flights), 10),
+                    "hotels_checked": min(len(all_hotels), 10),
+                    "activities_checked": min(len(all_activities), 15)
+                }
+            }
+
+            if not should_use:
+                logger.warning("=" * 80)
+                logger.warning("⚠️  EDFL FINAL VALIDATION FAILED ⚠️")
+                logger.warning(f"Risk of Hallucination: {risk_bound:.3f} (threshold: 0.05)")
+                logger.warning(f"Rationale: {rationale}")
+                logger.warning("The itinerary may contain hallucinated or inaccurate information!")
+                logger.warning("Audit agent will attempt to fix issues.")
+                logger.warning("=" * 80)
+            else:
+                logger.info("=" * 80)
+                logger.info("✓ EDFL FINAL VALIDATION PASSED ✓")
+                logger.info(f"Risk of Hallucination: {risk_bound:.3f} (threshold: 0.05)")
+                logger.info(f"Confidence: {itinerary.edfl_validation['confidence']}")
+                logger.info("Itinerary is grounded in collected evidence.")
+                logger.info("=" * 80)
+
+        except Exception as e:
+            logger.error(f"EDFL final validation error: {e}")
+            logger.error("Continuing without validation metrics")
+            itinerary.edfl_validation = {
+                "error": str(e),
+                "validation_type": "evidence_based_final"
+            }
+
+        return itinerary
 
     @traceable(name="itinerary_agent_run")
     def run(self, state: TravelPlanningState) -> TravelPlanningState:
@@ -363,6 +514,15 @@ class ItineraryAgent:
             timeframe=state.travel_intent.timeframe
         )
 
+        # CRITICAL: Validate final itinerary against ALL collected evidence
+        # This is the last line of defense against hallucinations before presenting to user
+        itinerary = self.validate_final_itinerary(
+            itinerary=itinerary,
+            all_flights=state.flights,
+            all_hotels=state.hotels,
+            all_activities=state.activities
+        )
+
         state.final_itinerary = itinerary
         state.completed_agents.append("itinerary")
         state.metadata["itinerary_created"] = True
@@ -370,7 +530,13 @@ class ItineraryAgent:
         # Add EDFL validation metrics to state metadata
         if hasattr(itinerary, 'edfl_validation') and itinerary.edfl_validation:
             state.metadata["itinerary_edfl_validation"] = itinerary.edfl_validation
-            logger.info(f"Itinerary agent completed. Created: {itinerary.title}. EDFL: {'PASS' if itinerary.edfl_validation.get('validation_passed') else 'FAIL'} (RoH={itinerary.edfl_validation.get('risk_of_hallucination', 'N/A')})")
+
+            validation_status = "PASS" if itinerary.edfl_validation.get('validation_passed') else "FAIL"
+            risk = itinerary.edfl_validation.get('risk_of_hallucination', 'N/A')
+            confidence = itinerary.edfl_validation.get('confidence', 'N/A')
+
+            logger.info(f"Itinerary agent completed. Created: {itinerary.title}")
+            logger.info(f"Final EDFL Validation: {validation_status} | RoH={risk} | Confidence={confidence}")
         else:
             logger.info(f"Itinerary agent completed. Created: {itinerary.title}")
 

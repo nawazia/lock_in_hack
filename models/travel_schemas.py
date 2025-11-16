@@ -149,6 +149,7 @@ class Activity(BaseModel):
     rating: Optional[float] = None
     booking_required: bool = False
     booking_url: Optional[str] = None
+    edfl_validation: Optional[Dict[str, Any]] = Field(None, description="EDFL hallucination detection metrics")
 
     class Config:
         json_schema_extra = {

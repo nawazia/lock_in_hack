@@ -3,13 +3,15 @@
 import logging
 import json
 import os
-from typing import List
+from typing import List, Optional
+from datetime import datetime
 from langsmith import traceable
 from langchain_core.prompts import ChatPromptTemplate
 
 from config.llm_setup import get_llm
 from config.hallbayes_validator import EDFLValidator
 from models.travel_schemas import TravelPlanningState, Flight
+from models.observability_schemas import EvidenceData, ExtractionData, HallucinationMetrics
 from tools.travel_tools import search_flights
 
 logger = logging.getLogger(__name__)
@@ -48,7 +50,8 @@ class FlightAgent:
         origin: str,
         destination: str,
         date: str,
-        passengers: int = 1
+        passengers: int = 1,
+        collector: Optional[any] = None
     ) -> List[Flight]:
         """Search for flights and parse results into Flight objects.
 
@@ -87,7 +90,7 @@ class FlightAgent:
                 return []
 
             # Use LLM to parse the search results into structured Flight objects
-            flights = self._parse_with_llm(raw_results, origin, destination, date)
+            flights = self._parse_with_llm(raw_results, origin, destination, date, collector=collector)
 
             logger.info(f"Found and parsed {len(flights)} flight options")
             return flights
@@ -101,7 +104,8 @@ class FlightAgent:
         search_results: List[dict],
         origin: str,
         destination: str,
-        date: str
+        date: str,
+        collector: Optional[any] = None
     ) -> List[Flight]:
         """Use LLM to parse Valyu search results into Flight objects.
 
@@ -275,10 +279,88 @@ Extract flight information as JSON array.""")
             elif edfl_metrics:
                 self._last_edfl_metrics = edfl_metrics
 
+            # Record observability data if collector is provided
+            if collector:
+                try:
+                    # Build EvidenceData
+                    evidence_data = EvidenceData(
+                        search_query=f"Flights from {origin} to {destination} on {date}",
+                        raw_results_count=len(search_results),
+                        raw_results=search_results[:10],  # Include top 10
+                        formatted_evidence=formatted_results,
+                        evidence_length=len(formatted_results)
+                    )
+
+                    # Build ExtractionData
+                    extraction_data = ExtractionData(
+                        extracted_items=[f.model_dump() for f in flights],
+                        item_count=len(flights),
+                        extraction_prompt=str(formatted_prompt[0].content[:500]) if formatted_prompt else None,
+                        llm_output_raw=content[:1000] if 'content' in locals() else None
+                    )
+
+                    # Build HallucinationMetrics if EDFL ran
+                    hallucination_metrics = None
+                    if edfl_metrics and edfl_metrics.get("edfl_decision") != "ERROR":
+                        # Get detailed metrics from validator if available
+                        detailed_metrics = getattr(self.edfl_validator, '_last_detailed_metrics', None)
+
+                        if detailed_metrics:
+                            hallucination_metrics = HallucinationMetrics(
+                                validation_type="evidence_based",
+                                edfl_decision=edfl_metrics["edfl_decision"],
+                                risk_of_hallucination=edfl_metrics["edfl_risk_bound"],
+                                confidence="high" if edfl_metrics["edfl_risk_bound"] < 0.05 else (
+                                    "medium" if edfl_metrics["edfl_risk_bound"] < 0.5 else "low"
+                                ),
+                                delta_bar=detailed_metrics.get("delta_bar", 0.0),
+                                isr=detailed_metrics.get("isr", 0.0),
+                                b2t=detailed_metrics.get("b2t", 0.0),
+                                p_answer=detailed_metrics.get("p_answer", 0.0),
+                                q_avg=detailed_metrics.get("q_avg", 0.0),
+                                q_lo=detailed_metrics.get("q_lo", 0.0),
+                                n_samples=detailed_metrics.get("n_samples", 5),
+                                m_skeletons=detailed_metrics.get("m_skeletons", 4),
+                                rationale=edfl_metrics.get("edfl_rationale", "")
+                            )
+
+                    # Record the step
+                    collector.record_step(
+                        step_name="flight_search",
+                        step_type="extraction",
+                        evidence=evidence_data,
+                        extraction=extraction_data,
+                        hallucination_metrics=hallucination_metrics,
+                        status="success" if flights else "warning",
+                        metadata={
+                            "origin": origin,
+                            "destination": destination,
+                            "date": date,
+                            "flights_extracted": len(flights)
+                        }
+                    )
+                    logger.info(f"Recorded observability data for flight search: {len(flights)} flights")
+
+                except Exception as e:
+                    logger.warning(f"Failed to record observability data: {e}")
+
             return flights
 
         except Exception as e:
             logger.error(f"Error parsing flights with LLM: {e}")
+
+            # Record error in observability if collector provided
+            if collector:
+                try:
+                    collector.record_step(
+                        step_name="flight_search",
+                        step_type="extraction",
+                        status="failed",
+                        error_message=str(e)
+                    )
+                except:
+                    pass
+
             return []
 
     @traceable(name="flight_agent_run")
@@ -298,6 +380,9 @@ Extract flight information as JSON array.""")
 
         intent = state.travel_intent
         all_flights = []
+
+        # Get observability collector from state metadata
+        collector = state.metadata.get("observability_collector", None)
 
         # Parse timeframe to extract dates
         timeframe_str = intent.timeframe or "December 2025"
@@ -332,7 +417,8 @@ Extract flight information as JSON array.""")
                 origin=origin,
                 destination=destination,
                 date=travel_date,
-                passengers=intent.travelers or 1
+                passengers=intent.travelers or 1,
+                collector=collector
             )
             all_flights.extend(flights)
 
