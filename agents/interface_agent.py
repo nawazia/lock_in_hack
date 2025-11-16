@@ -7,7 +7,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 
 from config.llm_setup import get_llm
-from models.travel_schemas import TravelIntent, TravelPlanningState
+from models.travel_schemas import TravelIntent, TravelPlanningState, OptimizationPreference
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +174,36 @@ Return the information as a JSON object. If information is not mentioned, use nu
             logger.error(f"Error generating clarifying questions: {e}")
             return []
 
+    def extract_optimization_preference(self, user_query: str, conversation_history: list = None) -> OptimizationPreference:
+        """Extract optimization preference from user's response.
+
+        Args:
+            user_query: User's response to optimization question
+            conversation_history: Previous conversation context
+
+        Returns:
+            OptimizationPreference enum value
+        """
+        try:
+            query_lower = user_query.lower()
+
+            # Check for explicit mentions
+            if any(word in query_lower for word in ["latency", "speed", "fast", "performance", "quick"]):
+                return OptimizationPreference.LATENCY
+            elif any(word in query_lower for word in ["cost", "cheap", "budget", "save money", "affordable"]):
+                return OptimizationPreference.COST
+            elif any(word in query_lower for word in ["carbon", "emission", "environment", "green", "eco", "sustainable"]):
+                return OptimizationPreference.CARBON
+            elif any(word in query_lower for word in ["nothing", "default", "normal", "automatic", "standard", "don't care", "doesn't matter"]):
+                return OptimizationPreference.DEFAULT
+            else:
+                # Default if unclear
+                return OptimizationPreference.DEFAULT
+
+        except Exception as e:
+            logger.error(f"Error extracting optimization preference: {e}")
+            return OptimizationPreference.DEFAULT
+
     @traceable(name="interface_agent_run")
     def run(self, state: TravelPlanningState) -> TravelPlanningState:
         """Run the interface agent as part of the orchestrated workflow.
@@ -184,6 +214,69 @@ Return the information as a JSON object. If information is not mentioned, use nu
         Returns:
             Updated state with extracted travel intent and clarifying questions
         """
+        # Check if this is the first interaction and we need to ask about optimization
+        is_first_interaction = len(state.conversation_history) == 0
+
+        # If this is first interaction and optimization not set, ask about it first
+        if is_first_interaction and state.optimization_preference == OptimizationPreference.DEFAULT:
+            # Check if the query contains optimization preference
+            opt_pref = self.extract_optimization_preference(state.user_query)
+
+            # If no clear preference in query, ask the user
+            if opt_pref == OptimizationPreference.DEFAULT and "optim" not in state.user_query.lower():
+                state.conversation_history.append({
+                    "role": "user",
+                    "content": state.user_query
+                })
+
+                optimization_question = """Before we start planning your trip, what would you like to optimize for in terms of AI model usage?
+
+1. Nothing (default) - I'll automatically select the best AI models for each task
+2. Latency - Prioritize speed and performance (uses more powerful/expensive models, higher API costs)
+3. Cost - Minimize LLM API call costs (uses smaller/cheaper models, lower API bills)
+4. Carbon emissions - Minimize environmental impact (uses energy-efficient models)
+
+Note: This is about the AI processing costs, not your travel budget.
+You can type your preference (e.g., "latency", "cost", "carbon", or "nothing")."""
+
+                state.clarifying_questions = [optimization_question]
+                state.needs_user_input = True
+                state.metadata["awaiting_optimization_preference"] = True
+
+                state.conversation_history.append({
+                    "role": "assistant",
+                    "content": optimization_question
+                })
+
+                logger.info("Asking user for optimization preference")
+                return state
+            else:
+                # Set the preference if found in query
+                state.optimization_preference = opt_pref
+                logger.info(f"Optimization preference set to: {opt_pref.value}")
+
+        # If we were waiting for optimization preference, extract it now
+        if state.metadata.get("awaiting_optimization_preference", False):
+            opt_pref = self.extract_optimization_preference(state.user_query)
+            state.optimization_preference = opt_pref
+            state.metadata["awaiting_optimization_preference"] = False
+
+            state.conversation_history.append({
+                "role": "user",
+                "content": state.user_query
+            })
+
+            state.conversation_history.append({
+                "role": "assistant",
+                "content": f"Great! I'll optimize for {opt_pref.value} in terms of LLM API costs. Now, tell me about your travel plans!"
+            })
+
+            state.clarifying_questions = []
+            state.needs_user_input = True  # Still need travel info
+
+            logger.info(f"Optimization preference set to: {opt_pref.value}, ready for travel intent")
+            return state
+
         # Extract travel intent from user query, merging with existing intent if available
         intent = self.extract_intent(
             state.user_query,

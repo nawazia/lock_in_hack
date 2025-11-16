@@ -5,6 +5,14 @@ from datetime import datetime, date
 from enum import Enum
 
 
+class OptimizationPreference(str, Enum):
+    """User preference for LLM optimization."""
+    DEFAULT = "default"  # Automatic/dynamic selection
+    LATENCY = "latency"  # Optimize for speed/performance
+    COST = "cost"  # Optimize for lowest cost
+    CARBON = "carbon"  # Optimize for carbon emissions
+
+
 class TravelIntent(BaseModel):
     """User's travel intent extracted from conversation."""
 
@@ -245,6 +253,10 @@ class TravelPlanningState(BaseModel):
     # User input
     user_query: str = Field(..., description="Original user request")
     travel_intent: Optional[TravelIntent] = Field(None, description="Extracted travel intent")
+    optimization_preference: OptimizationPreference = Field(
+        default=OptimizationPreference.DEFAULT,
+        description="User's preference for LLM optimization (default, latency, cost, carbon)"
+    )
     conversation_history: List[Dict[str, str]] = Field(default_factory=list, description="User-agent conversation history")
     user_responses: Dict[str, str] = Field(default_factory=dict, description="User responses to questions")
 
