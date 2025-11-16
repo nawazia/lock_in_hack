@@ -273,6 +273,173 @@ def get_trace_details(run_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/api/grounding", methods=["POST"])
+def calculate_grounding():
+    """
+    Calculate grounding scores for LLM nodes based on their tool node predecessors.
+
+    Request:
+    {
+        "nodes": [array of node data from runMap]
+    }
+
+    Response:
+    {
+        "success": true,
+        "scores": {
+            "node_id": score (1-10),
+            ...
+        }
+    }
+    """
+    try:
+        data = request.json
+        nodes = data.get("nodes", [])
+
+        if not nodes:
+            return jsonify({"success": False, "error": "No nodes provided"}), 400
+
+        # Get OpenRouter API key from environment
+        openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
+        if not openrouter_api_key:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": "OPENROUTER_API_KEY not configured in .env",
+                    }
+                ),
+                503,
+            )
+
+        # Build a map of node_id -> node for quick lookup
+        node_map = {node["id"]: node for node in nodes}
+
+        # Build parent-child relationships to find siblings
+        children_by_parent = {}
+        for node in nodes:
+            parent_id = node.get("parentRunId")
+            if parent_id:
+                if parent_id not in children_by_parent:
+                    children_by_parent[parent_id] = []
+                children_by_parent[parent_id].append(node)
+
+        # Sort children by start_time to get proper sibling order
+        for parent_id in children_by_parent:
+            children_by_parent[parent_id].sort(
+                key=lambda n: n.get("startTime", "")
+            )
+
+        scores = {}
+
+        # Find LLM nodes whose immediate preceding sibling is a tool node
+        for node in nodes:
+            if node.get("runType") != "llm":
+                continue
+
+            parent_id = node.get("parentRunId")
+            if not parent_id:
+                continue
+
+            # Get siblings (nodes with same parent)
+            siblings = children_by_parent.get(parent_id, [])
+            if len(siblings) < 2:
+                continue
+
+            # Find this node's position among siblings
+            try:
+                node_index = siblings.index(node)
+            except ValueError:
+                continue
+
+            # Check if there's a preceding sibling and if it's a tool
+            if node_index > 0:
+                prev_sibling = siblings[node_index - 1]
+                if prev_sibling.get("runType") == "tool":
+                    # We have a tool -> llm pair, calculate grounding score
+                    tool_output = prev_sibling.get("outputs", {})
+                    llm_output = node.get("outputs", {})
+
+                    # Extract text content from outputs
+                    tool_content = str(tool_output)
+                    llm_content = str(llm_output)
+
+                    # Call OpenRouter to score grounding
+                    try:
+                        prompt = f"""You are evaluating how well an LLM's response is grounded in factual information from a tool output.
+
+Tool Output:
+{tool_content}
+
+LLM Response:
+{llm_content}
+
+Rate on a scale from 1-10 how well the LLM's response is grounded in the tool output:
+- 10: Perfectly grounded, all claims directly supported by tool output
+- 7-9: Mostly grounded, minor extrapolations
+- 4-6: Partially grounded, some unsupported claims
+- 1-3: Poorly grounded, mostly unsupported or contradictory
+
+Respond with a JSON object containing:
+1. "score": a number from 1-10
+2. "reasoning": a brief explanation (2-3 sentences) of why you gave this score
+
+Example format:
+{{"score": 8, "reasoning": "The LLM response accurately reflects the key facts from the tool output. Minor details were omitted but no unsupported claims were made."}}
+
+Respond with ONLY valid JSON, nothing else."""
+
+                        response = requests.post(
+                            "https://openrouter.ai/api/v1/chat/completions",
+                            headers={
+                                "Authorization": f"Bearer {openrouter_api_key}",
+                                "Content-Type": "application/json",
+                            },
+                            json={
+                                "model": "openai/gpt-4o-mini",
+                                "messages": [
+                                    {"role": "user", "content": prompt}
+                                ],
+                            },
+                            timeout=30,
+                        )
+
+                        if response.status_code == 200:
+                            response_data = response.json()
+                            result_text = response_data["choices"][0]["message"]["content"].strip()
+
+                            # Parse JSON response
+                            try:
+                                import json
+                                result = json.loads(result_text)
+                                score = result.get("score")
+                                reasoning = result.get("reasoning", "No reasoning provided")
+
+                                if score and 1 <= score <= 10:
+                                    scores[node["id"]] = {
+                                        "score": score,
+                                        "reasoning": reasoning
+                                    }
+                                    logger.info(f"Grounding score for {node['name']}: {score}")
+                                else:
+                                    logger.warning(f"Score out of range for {node['name']}: {score}")
+                            except json.JSONDecodeError:
+                                logger.warning(f"Could not parse JSON response for {node['name']}: {result_text}")
+                        else:
+                            logger.error(f"OpenRouter API error for {node['name']}: {response.status_code}")
+
+                    except Exception as e:
+                        logger.error(f"Error scoring node {node['name']}: {e}")
+                        continue
+
+        logger.info(f"Calculated {len(scores)} grounding scores")
+        return jsonify({"success": True, "scores": scores}), 200
+
+    except Exception as e:
+        logger.error(f"Error in grounding endpoint: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/chat", methods=["POST"])
 def chat():
     """
@@ -362,6 +529,7 @@ def index():
                     "GET /api/traces": "List available traces",
                     "GET /api/traces/latest": "Get latest trace",
                     "GET /api/traces/<run_id>": "Get trace details",
+                    "POST /api/grounding": "Calculate grounding scores for LLM nodes",
                     "POST /api/chat": "Chat with trace assistant",
                     "GET /health": "Health check",
                 },
