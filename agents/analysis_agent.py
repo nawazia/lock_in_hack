@@ -8,7 +8,7 @@ from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.runnables import RunnablePassthrough
 
 from models.schemas import NewsArticle, AgentState, AnalysisResult
-from config.llm_setup import get_llm_openai
+from config.llm_setup import get_llm
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +20,9 @@ class AnalysisAgent:
         """Initialize the analysis agent.
 
         Args:
-            llm: Language model to use. If None, uses default OpenAI model.
+            llm: Language model to use. If None, uses configured provider from LLM_PROVIDER env var.
         """
-        self.llm = llm or get_llm_openai()
+        self.llm = llm or get_llm()
         self.chain = self._create_analysis_chain()
 
     def _create_analysis_chain(self):

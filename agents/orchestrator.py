@@ -8,7 +8,7 @@ from agents.news_search_agent import NewsSearchAgent
 from agents.rag_agent import RAGAgent
 from agents.analysis_agent import AnalysisAgent
 from agents.summary_agent import SummaryAgent
-from config.llm_setup import get_llm_openai, get_llm_openrouter
+from config.llm_setup import get_llm
 import functools
 
 def setup_logging(log_file: str = "agent_orchestrator.log", level=logging.INFO):
@@ -96,7 +96,7 @@ class OrchestratorAgent:
         Args:
             llm: Language model to use for all agents
         """
-        self.llm = llm or get_llm_openrouter()
+        self.llm = llm or get_llm("openrouter")
 
         # Initialize all agents
         self.news_search_agent = NewsSearchAgent(llm=self.llm)

@@ -4,7 +4,7 @@ from typing import List, Dict, Any
 
 from tools.agent_tools import valyu_search_tool
 from models.schemas import NewsArticle, AgentState
-from config.llm_setup import get_llm_openai
+from config.llm_setup import get_llm
 
 logger = logging.getLogger(__name__)
 
@@ -16,9 +16,9 @@ class NewsSearchAgent:
         """Initialize the news search agent.
 
         Args:
-            llm: Language model to use. If None, uses default OpenAI model.
+            llm: Language model to use. If None, uses configured provider from LLM_PROVIDER env var.
         """
-        self.llm = llm or get_llm_openai()
+        self.llm = llm or get_llm()
         self.search_tool = valyu_search_tool
 
     def search(self, query: str) -> List[NewsArticle]:

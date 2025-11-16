@@ -6,7 +6,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 from models.schemas import NewsArticle, AgentState
-from config.llm_setup import get_llm_openai
+from config.llm_setup import get_llm
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +18,9 @@ class SummaryAgent:
         """Initialize the summary agent.
 
         Args:
-            llm: Language model to use. If None, uses default OpenAI model.
+            llm: Language model to use. If None, uses configured provider from LLM_PROVIDER env var.
         """
-        self.llm = llm or get_llm_openai()
+        self.llm = llm or get_llm()
         self.chain = self._create_summary_chain()
 
     def _create_summary_chain(self):

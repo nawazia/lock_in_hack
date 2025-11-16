@@ -43,9 +43,19 @@ class RAGAgent:
         self.persist_directory = persist_directory
         Path(self.persist_directory).mkdir(parents=True, exist_ok=True)
 
-        self.embeddings = embedding_model or OpenAIEmbeddings(
-            model="text-embedding-3-small"
-        )
+        # Initialize embeddings with error handling
+        if embedding_model:
+            self.embeddings = embedding_model
+        else:
+            # Check if OpenAI API key is available
+            if not os.getenv("OPENAI_API_KEY"):
+                raise ValueError(
+                    "OPENAI_API_KEY environment variable is not set. "
+                    "Please set it in your .env file or pass an embedding_model parameter."
+                )
+            self.embeddings = OpenAIEmbeddings(
+                model="text-embedding-3-small"
+            )
 
         self.collection_name = collection_name
         self.vectorstore = self._initialize_vectorstore()
