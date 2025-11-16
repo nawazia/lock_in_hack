@@ -266,16 +266,10 @@ You can type your preference (e.g., "latency", "cost", "carbon", or "nothing")."
                 "content": state.user_query
             })
 
-            state.conversation_history.append({
-                "role": "assistant",
-                "content": f"Great! I'll optimize for {opt_pref.value} in terms of LLM API costs. Now, tell me about your travel plans!"
-            })
+            logger.info(f"Optimization preference set to: {opt_pref.value}, continuing to extract travel intent from same message")
 
-            state.clarifying_questions = []
-            state.needs_user_input = True  # Still need travel info
-
-            logger.info(f"Optimization preference set to: {opt_pref.value}, ready for travel intent")
-            return state
+            # Don't return early - continue to extract travel intent from the same message
+            # The user might have provided both optimization preference AND travel details
 
         # Extract travel intent from user query, merging with existing intent if available
         intent = self.extract_intent(
@@ -285,11 +279,13 @@ You can type your preference (e.g., "latency", "cost", "carbon", or "nothing")."
         )
         state.travel_intent = intent
 
-        # Add current query to conversation history
-        state.conversation_history.append({
-            "role": "user",
-            "content": state.user_query
-        })
+        # Add current query to conversation history (if not already added)
+        # Check if the last user message is the same to avoid duplicates
+        if not state.conversation_history or state.conversation_history[-1].get("content") != state.user_query:
+            state.conversation_history.append({
+                "role": "user",
+                "content": state.user_query
+            })
 
         # Check if intent is complete
         if intent.is_complete():
