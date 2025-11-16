@@ -14,12 +14,15 @@ from agents.activities_agent import ActivitiesAgent
 from agents.ranking_agent import RankingAgent
 from agents.itinerary_agent import ItineraryAgent
 from agents.audit_agent import AuditAgent
-from models.travel_schemas import TravelPlanningState
-from utils.observability_collector import ObservabilityCollector
-from config.llm_setup import get_llm
 from models.travel_schemas import TravelPlanningState, OptimizationPreference
+from utils.observability_collector import ObservabilityCollector
 from config.llm_setup import get_llm, get_llm_openrouter
-from config.agent_model_config import AGENT_DESCRIPTIONS, get_model_strategy, get_provider_for_optimization, ModelProvider
+from config.agent_model_config import (
+    AGENT_DESCRIPTIONS,
+    ModelProvider,
+    get_model_strategy,
+    get_provider_for_optimization,
+)
 from model_serving_agent import dynamic_model_router
 
 logger = logging.getLogger(__name__)
@@ -28,56 +31,47 @@ logger = logging.getLogger(__name__)
 class TravelOrchestrator:
     """Orchestrator that coordinates multiple agents for travel planning."""
 
-    def __init__(self, llm=None, optimization_preference: OptimizationPreference = OptimizationPreference.DEFAULT,
-                 provider_preference: ModelProvider = ModelProvider.AUTO):
+    def __init__(self, llm=None, optimization_preference: OptimizationPreference = OptimizationPreference.DEFAULT, provider_preference: ModelProvider = ModelProvider.AUTO):
         """Initialize the travel orchestrator.
 
         Args:
-            llm: Language model to use for agents that need it (will be overridden by dynamic routing)
+            llm: Language model to use for agents that need it (optional, will use dynamic routing if not provided)
             optimization_preference: User's preference for LLM optimization
-            provider_preference: User's preference for model provider (claude, openai, or auto)
+            provider_preference: Preferred LLM provider (Claude, OpenAI, or Auto)
         """
         self.optimization_preference = optimization_preference
         self.provider_preference = provider_preference
-        self.llm = llm or get_llm()
 
-        # Get model selection strategy based on optimization preference
+        # Get model selection strategy and provider
         model_strategy = get_model_strategy(optimization_preference)
-
-        # Get provider based on optimization and user preference
         provider = get_provider_for_optimization(optimization_preference, provider_preference)
 
-        logger.info(f"Initializing orchestrator with optimization: {optimization_preference.value}, "
-                   f"strategy: {model_strategy}, provider: {provider}")
+        logger.info(f"Initializing orchestrator with strategy: {model_strategy}, provider: {provider}")
 
-        # Initialize all agents with dynamically selected models
-        # Each agent gets a model appropriate for its specific requirements
+        # Initialize all agents with dynamic model routing via OpenRouter
         interface_model = dynamic_model_router(
             AGENT_DESCRIPTIONS["interface"],
             default=model_strategy,
             provider=provider
         )
-        interface_llm = get_llm_openrouter(model=interface_model)
-        self.interface_agent = InterfaceAgent(llm=interface_llm)
-        logger.info(f"Interface agent initialized with {interface_model} (strategy: {model_strategy})")
+        self.interface_agent = InterfaceAgent(llm=get_llm_openrouter(model=interface_model))
+        logger.info(f"Interface agent initialized with {interface_model}")
 
         flight_model = dynamic_model_router(
             AGENT_DESCRIPTIONS["flight"],
             default=model_strategy,
             provider=provider
         )
-        flight_llm = get_llm_openrouter(model=flight_model)
-        self.flight_agent = FlightAgent(llm=flight_llm)
-        logger.info(f"Flight agent initialized with {flight_model} (strategy: {model_strategy})")
+        self.flight_agent = FlightAgent(llm=get_llm_openrouter(model=flight_model))
+        logger.info(f"Flight agent initialized with {flight_model}")
 
         hotel_model = dynamic_model_router(
             AGENT_DESCRIPTIONS["hotel"],
             default=model_strategy,
             provider=provider
         )
-        hotel_llm = get_llm_openrouter(model=hotel_model)
-        self.hotel_agent = HotelAgent(llm=hotel_llm)
-        logger.info(f"Hotel agent initialized with {hotel_model} (strategy: {model_strategy})")
+        self.hotel_agent = HotelAgent(llm=get_llm_openrouter(model=hotel_model))
+        logger.info(f"Hotel agent initialized with {hotel_model}")
 
         # Budget agent doesn't need LLM - it's deterministic
         self.budget_agent = BudgetAgent()
@@ -87,9 +81,8 @@ class TravelOrchestrator:
             default=model_strategy,
             provider=provider
         )
-        activities_llm = get_llm_openrouter(model=activities_model)
-        self.activities_agent = ActivitiesAgent(llm=activities_llm)
-        logger.info(f"Activities agent initialized with {activities_model} (strategy: {model_strategy})")
+        self.activities_agent = ActivitiesAgent(llm=get_llm_openrouter(model=activities_model))
+        logger.info(f"Activities agent initialized with {activities_model}")
 
         # Ranking agent doesn't need LLM - it's deterministic
         self.ranking_agent = RankingAgent()
@@ -100,9 +93,8 @@ class TravelOrchestrator:
             default=model_strategy,
             provider=provider
         )
-        itinerary_llm = get_llm_openrouter(model=itinerary_model)
-        self.itinerary_agent = ItineraryAgent(llm=itinerary_llm)
-        logger.info(f"Itinerary agent initialized with {itinerary_model} (strategy: {model_strategy})")
+        self.itinerary_agent = ItineraryAgent(llm=get_llm_openrouter(model=itinerary_model))
+        logger.info(f"Itinerary agent initialized with {itinerary_model}")
 
         # Audit agent doesn't need LLM - it's deterministic
         self.audit_agent = AuditAgent()

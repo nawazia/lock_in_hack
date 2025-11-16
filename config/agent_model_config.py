@@ -97,26 +97,49 @@ High risk - final quality gate before presenting to user.
 
 # Mapping from optimization preference to model_serving_agent's `default` parameter
 OPTIMIZATION_TO_MODEL_STRATEGY = {
-    OptimizationPreference.DEFAULT: "dynamic",  # Auto-select based on agent requirements
+    OptimizationPreference.DEFAULT: "mid",  # Use medium model for balanced performance
     OptimizationPreference.LATENCY: "max",      # Use largest/fastest model for all agents
     OptimizationPreference.COST: "min",         # Use smallest/cheapest model for all agents
     OptimizationPreference.CARBON: "min",       # Use smallest model for lowest carbon footprint
 }
 
+# Force certain agents to use minimum model tier regardless of user preference
+# This ensures critical agents like interface work properly
+AGENT_MIN_MODEL_TIER = {
+    "interface": "mid",  # Interface agent needs at least mid-tier for JSON extraction
+    "audit": "mid",      # Audit agent needs good reasoning to catch errors
+}
 
-def get_model_strategy(optimization_preference: OptimizationPreference) -> str:
+
+def get_model_strategy(optimization_preference: OptimizationPreference, agent_name: str = None) -> str:
     """Convert optimization preference to model selection strategy.
 
     Args:
         optimization_preference: User's optimization preference
+        agent_name: Optional agent name to apply minimum tier requirements
 
     Returns:
         Model strategy string for dynamic_model_router's `default` parameter
     """
-    return OPTIMIZATION_TO_MODEL_STRATEGY.get(
+    base_strategy = OPTIMIZATION_TO_MODEL_STRATEGY.get(
         optimization_preference,
-        "dynamic"  # Fallback to dynamic
+        "mid"  # Fallback to mid
     )
+
+    # If agent has a minimum tier requirement, use the higher of the two
+    if agent_name and agent_name in AGENT_MIN_MODEL_TIER:
+        min_tier = AGENT_MIN_MODEL_TIER[agent_name]
+
+        # Define tier hierarchy
+        tier_hierarchy = {"min": 0, "mid": 1, "max": 2}
+
+        base_tier_level = tier_hierarchy.get(base_strategy, 1)
+        min_tier_level = tier_hierarchy.get(min_tier, 1)
+
+        if min_tier_level > base_tier_level:
+            return min_tier
+
+    return base_strategy
 
 
 def get_provider_for_optimization(

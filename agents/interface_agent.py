@@ -157,8 +157,7 @@ Return the information as a JSON object. If information is not mentioned, use nu
                     questions.append("When are you planning to travel? Please provide dates or duration (e.g., Dec 20-27, 1 week in January)")
                 elif field == "locations":
                     questions.append("Where would you like to travel to? Please specify city/cities or country/countries.")
-                elif field == "interests":
-                    questions.append("What are your main interests for this trip? (e.g., food, culture, adventure, relaxation, history, nature)")
+                # Interests are optional now - don't ask unless user wants to specify
 
             # Additional questions for optional but useful fields
             if not intent.travelers or intent.travelers == 0:
@@ -270,6 +269,8 @@ You can type your preference (e.g., "latency", "cost", "carbon", or "nothing")."
 
             # Don't return early - continue to extract travel intent from the same message
             # The user might have provided both optimization preference AND travel details
+        # Optimization preference is now set via UI slider, not through conversation
+        # No need to ask the user about it anymore
 
         # Extract travel intent from user query, merging with existing intent if available
         intent = self.extract_intent(

@@ -311,7 +311,7 @@ export const processTraceData = (traceData) => {
   if (!traceData || !traceData.runs || traceData.runs.length === 0) {
     return { nodes: [], edges: [], runMap: new Map() };
   }
-  print(traceData.runs);
+  console.log(traceData.runs);
   const { runMap, rootRuns } = buildTraceTree(traceData.runs);
 
   // Compress single-child chains with same run type

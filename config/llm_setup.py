@@ -41,12 +41,12 @@ def get_llm(provider: str = None):
     """Get LLM based on provider or LLM_PROVIDER env var.
 
     Args:
-        provider: 'openai' or 'bedrock'. If None, uses LLM_PROVIDER env var (defaults to 'bedrock')
+        provider: 'openai' or 'bedrock'. If None, uses LLM_PROVIDER env var (defaults to 'openai')
 
     Returns:
         Configured LLM instance
     """
-    provider = provider or os.getenv("LLM_PROVIDER", "bedrock").lower()
+    provider = provider or os.getenv("LLM_PROVIDER", "openai").lower()
 
     if provider == "bedrock":
         return get_llm_bedrock()
