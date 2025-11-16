@@ -21,7 +21,6 @@ from langsmith import Client as LangSmithClient
 from pydantic import BaseModel
 from pydantic.json import pydantic_encoder
 
-from agents.orchestrator import build_agent
 from utils.logger import setup_logger
 
 # Load environment variables
@@ -57,119 +56,10 @@ class PydanticJSONProvider(DefaultJSONProvider):
 app.json = PydanticJSONProvider(app)
 
 
-def get_orchestrator():
-    """Get or create the orchestrator instance."""
-    global orchestrator
-    if orchestrator is None:
-        logger.info("Initializing multi-agent orchestrator...")
-        orchestrator = build_agent()
-        logger.info("Orchestrator initialized successfully")
-    return orchestrator
-
-
 @app.route("/health", methods=["GET"])
 def health_check():
     """Health check endpoint."""
     return jsonify({"status": "healthy", "service": "multi-agent-news-system"}), 200
-
-
-@app.route("/api/query", methods=["POST"])
-def process_query():
-    """
-    Process a news query through the multi-agent system.
-
-    Request body:
-    {
-        "query": "Your news query here"
-    }
-
-    Response:
-    {
-        "success": true,
-        "data": {
-            "query": "...",
-            "summary": "...",
-            "analysis": "...",
-            "search_results_count": 5,
-            "rag_results_count": 3,
-            "completed_agents": [...],
-            "metadata": {...}
-        },
-        "langsmith_url": "https://smith.langchain.com/..."
-    }
-    """
-    try:
-        # Get query from request body
-        data = request.get_json()
-
-        if not data or "query" not in data:
-            return (
-                jsonify(
-                    {"success": False, "error": "Missing 'query' field in request body"}
-                ),
-                400,
-            )
-
-        query = data["query"]
-
-        if not query or not isinstance(query, str) or len(query.strip()) == 0:
-            return (
-                jsonify(
-                    {"success": False, "error": "Query must be a non-empty string"}
-                ),
-                400,
-            )
-
-        logger.info(f"Received query: {query}")
-
-        # Get orchestrator and process query
-        orch = get_orchestrator()
-        result = orch.process_query(query)
-
-        # Build response
-        response = {"success": True, "data": result}
-
-        # Add LangSmith trace URL if tracing is enabled
-        if os.getenv("LANGCHAIN_TRACING_V2") == "true":
-            project_name = os.getenv("LANGCHAIN_PROJECT", "lock-in-hack-multi-agent")
-            response["langsmith_info"] = {
-                "tracing_enabled": True,
-                "project": project_name,
-                "dashboard_url": f"https://smith.langchain.com/o/default/projects/p/{project_name}",
-            }
-
-        logger.info("Query processed successfully")
-        return jsonify(response), 200
-
-    except Exception as e:
-        logger.error(f"Error processing query: {e}", exc_info=True)
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
-@app.route("/api/stats", methods=["GET"])
-def get_stats():
-    """
-    Get RAG storage statistics.
-
-    Response:
-    {
-        "success": true,
-        "stats": {
-            "total_documents": 100,
-            "collection_name": "news_articles",
-            "persist_directory": "..."
-        }
-    }
-    """
-    try:
-        orch = get_orchestrator()
-        stats = orch.get_rag_stats()
-
-        return jsonify({"success": True, "stats": stats}), 200
-
-    except Exception as e:
-        logger.error(f"Error getting stats: {e}", exc_info=True)
-        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/api/traces", methods=["GET"])
@@ -230,19 +120,33 @@ def get_traces():
 
 
 def _fetch_trace_tree(run_id):
-    """Helper function to fetch a complete trace tree with all descendants."""
-    runs_data = []
-    visited = set()  # to avoid cycles / repeated runs
+    """
+    Helper function to fetch a complete trace tree with all descendants.
+    Uses batch fetching to avoid rate limiting (1-2 API calls instead of N calls).
+    """
+    project_name = os.getenv("LANGCHAIN_PROJECT", "lock-in-hack-multi-agent")
 
-    def fetch_run_tree_recursive(current_run_id):
-        cid = str(current_run_id)
-        if cid in visited:
-            return
-        visited.add(cid)
+    try:
+        # First, fetch the root run to get trace_id
+        root_run = langsmith_client.read_run(run_id)
+        trace_id = getattr(root_run, "trace_id", run_id)
 
-        try:
-            run = langsmith_client.read_run(current_run_id)
+        logger.info(f"Batch fetching all runs for trace {trace_id}")
 
+        # Batch fetch ALL runs in this trace (single API call!)
+        all_runs = list(
+            langsmith_client.list_runs(
+                project_name=project_name,
+                trace_id=trace_id,
+                limit=1000,  # Should be enough for most traces
+            )
+        )
+
+        logger.info(f"Fetched {len(all_runs)} runs in single batch call")
+
+        # Convert all runs to dict format
+        runs_data = []
+        for run in all_runs:
             # Calculate latency if we have start and end times
             latency = None
             if run.start_time and run.end_time:
@@ -272,18 +176,11 @@ def _fetch_trace_tree(run_id):
             print(run_dict["name"], run_dict["run_type"])
             runs_data.append(run_dict)
 
-            # Recursively fetch children
-            if run.child_run_ids:
-                for child_id in run.child_run_ids:
-                    fetch_run_tree_recursive(child_id)
+        return list(reversed(runs_data))
 
-        except Exception as e:
-            logger.error(f"Error fetching run {current_run_id}: {e}")
-            # Continue with other runs even if one fails
-            pass
-
-    fetch_run_tree_recursive(run_id)
-    return runs_data
+    except Exception as e:
+        logger.error(f"Error batch fetching trace tree: {e}", exc_info=True)
+        return []
 
 
 @app.route("/api/traces/latest", methods=["GET"])
@@ -384,8 +281,6 @@ def index():
                 "service": "Multi-Agent News Processing System",
                 "version": "1.0.0",
                 "endpoints": {
-                    "POST /api/query": "Process a news query",
-                    "GET /api/stats": "Get RAG storage statistics",
                     "GET /api/traces": "List available traces",
                     "GET /api/traces/latest": "Get latest trace",
                     "GET /api/traces/<run_id>": "Get trace details",
