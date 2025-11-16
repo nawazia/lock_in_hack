@@ -55,7 +55,7 @@ const CustomNode = ({ data, selected }) => {
     >
       <Handle
         type="target"
-        position={Position.Left}
+        position={Position.Top}
         style={{ background: '#555' }}
       />
 
@@ -63,7 +63,7 @@ const CustomNode = ({ data, selected }) => {
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
         <span style={{ fontSize: '18px' }}>{getIcon()}</span>
         <span style={{
-          fontSize: '15px',
+          fontSize: '18px', // Increased by 20% (15px -> 18px)
           fontWeight: '600',
           flex: 1,
           overflow: 'hidden',
@@ -147,7 +147,7 @@ const CustomNode = ({ data, selected }) => {
 
       <Handle
         type="source"
-        position={Position.Right}
+        position={Position.Bottom}
         style={{ background: '#555' }}
       />
     </div>

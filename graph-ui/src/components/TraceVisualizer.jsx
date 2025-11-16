@@ -32,6 +32,7 @@ const TraceVisualizer = () => {
   const [runMap, setRunMap] = useState(new Map());
   const [groundingScores, setGroundingScores] = useState({});
   const [isCalculatingGrounding, setIsCalculatingGrounding] = useState(false);
+  const [currentTraceName, setCurrentTraceName] = useState("");
 
   // Load available traces on mount
   useEffect(() => {
@@ -59,6 +60,7 @@ const TraceVisualizer = () => {
   const loadTrace = async (traceId) => {
     if (!traceId) {
       clearTraceView();
+      setCurrentTraceName("");
       return;
     }
 
@@ -74,16 +76,49 @@ const TraceVisualizer = () => {
         setEdges(processedEdges);
         setRunMap(processedRunMap);
         setTraceStats(getTraceStats(response.trace));
+
+        // Get trace name from availableTraces or create a default one
+        const selectedTrace = availableTraces.find(t => t.id === traceId);
+        const traceName = selectedTrace?.name || `Trace ${new Date().toISOString().split('T')[0]}`;
+        setCurrentTraceName(traceName);
+
+        // Auto-index the trace for RAG
+        indexTraceInBackground(traceId, traceName);
       } else {
         setError(response.error || 'Failed to load trace data');
         clearTraceView();
+        setCurrentTraceName("");
       }
     } catch (err) {
       console.error('Error loading trace:', err);
       setError(err.message || 'Failed to load trace');
       clearTraceView();
+      setCurrentTraceName("");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const indexTraceInBackground = async (traceId, traceName) => {
+    try {
+      console.log(`Auto-indexing trace '${traceName}' for RAG...`);
+      const response = await fetch(`http://localhost:8000/api/traces/${traceId}/index`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ trace_name: traceName }),
+      });
+
+      const result = await response.json();
+      if (result.success) {
+        console.log(`Successfully indexed ${result.num_nodes} nodes for trace '${traceName}'`);
+      } else {
+        console.error('Failed to index trace:', result.error);
+      }
+    } catch (err) {
+      console.error('Error indexing trace:', err);
+      // Don't show error to user - this is a background operation
     }
   };
 
@@ -376,6 +411,7 @@ const TraceVisualizer = () => {
         onClose={() => setIsChatOpen(false)}
         nodes={nodes}
         runMap={runMap}
+        traceName={currentTraceName}
       />
 
       {/* Node Type Legend */}
