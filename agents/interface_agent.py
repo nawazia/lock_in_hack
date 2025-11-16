@@ -213,6 +213,62 @@ Return the information as a JSON object. If information is not mentioned, use nu
         Returns:
             Updated state with extracted travel intent and clarifying questions
         """
+        # Check if this is the first interaction and we need to ask about optimization
+        is_first_interaction = len(state.conversation_history) == 0
+
+        # If this is first interaction and optimization not set, ask about it first
+        if is_first_interaction and state.optimization_preference == OptimizationPreference.DEFAULT:
+            # Check if the query contains optimization preference
+            opt_pref = self.extract_optimization_preference(state.user_query)
+
+            # If no clear preference in query, ask the user
+            if opt_pref == OptimizationPreference.DEFAULT and "optim" not in state.user_query.lower():
+                state.conversation_history.append({
+                    "role": "user",
+                    "content": state.user_query
+                })
+
+                optimization_question = """Before we start planning your trip, what would you like to optimize for in terms of AI model usage?
+
+1. Nothing (default) - I'll automatically select the best AI models for each task
+2. Latency - Prioritize speed and performance (uses more powerful/expensive models, higher API costs)
+3. Cost - Minimize LLM API call costs (uses smaller/cheaper models, lower API bills)
+4. Carbon emissions - Minimize environmental impact (uses energy-efficient models)
+
+Note: This is about the AI processing costs, not your travel budget.
+You can type your preference (e.g., "latency", "cost", "carbon", or "nothing")."""
+
+                state.clarifying_questions = [optimization_question]
+                state.needs_user_input = True
+                state.metadata["awaiting_optimization_preference"] = True
+
+                state.conversation_history.append({
+                    "role": "assistant",
+                    "content": optimization_question
+                })
+
+                logger.info("Asking user for optimization preference")
+                return state
+            else:
+                # Set the preference if found in query
+                state.optimization_preference = opt_pref
+                logger.info(f"Optimization preference set to: {opt_pref.value}")
+
+        # If we were waiting for optimization preference, extract it now
+        if state.metadata.get("awaiting_optimization_preference", False):
+            opt_pref = self.extract_optimization_preference(state.user_query)
+            state.optimization_preference = opt_pref
+            state.metadata["awaiting_optimization_preference"] = False
+
+            state.conversation_history.append({
+                "role": "user",
+                "content": state.user_query
+            })
+
+            logger.info(f"Optimization preference set to: {opt_pref.value}, continuing to extract travel intent from same message")
+
+            # Don't return early - continue to extract travel intent from the same message
+            # The user might have provided both optimization preference AND travel details
         # Optimization preference is now set via UI slider, not through conversation
         # No need to ask the user about it anymore
 
@@ -224,11 +280,13 @@ Return the information as a JSON object. If information is not mentioned, use nu
         )
         state.travel_intent = intent
 
-        # Add current query to conversation history
-        state.conversation_history.append({
-            "role": "user",
-            "content": state.user_query
-        })
+        # Add current query to conversation history (if not already added)
+        # Check if the last user message is the same to avoid duplicates
+        if not state.conversation_history or state.conversation_history[-1].get("content") != state.user_query:
+            state.conversation_history.append({
+                "role": "user",
+                "content": state.user_query
+            })
 
         # Check if intent is complete
         if intent.is_complete():

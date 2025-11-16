@@ -30,6 +30,9 @@ const TraceVisualizer = () => {
   const [selectedTraceId, setSelectedTraceId] = useState(null);
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [runMap, setRunMap] = useState(new Map());
+  const [groundingScores, setGroundingScores] = useState({});
+  const [isCalculatingGrounding, setIsCalculatingGrounding] = useState(false);
+  const [currentTraceName, setCurrentTraceName] = useState("");
 
   // Load available traces on mount
   useEffect(() => {
@@ -57,6 +60,7 @@ const TraceVisualizer = () => {
   const loadTrace = async (traceId) => {
     if (!traceId) {
       clearTraceView();
+      setCurrentTraceName("");
       return;
     }
 
@@ -72,16 +76,49 @@ const TraceVisualizer = () => {
         setEdges(processedEdges);
         setRunMap(processedRunMap);
         setTraceStats(getTraceStats(response.trace));
+
+        // Get trace name from availableTraces or create a default one
+        const selectedTrace = availableTraces.find(t => t.id === traceId);
+        const traceName = selectedTrace?.name || `Trace ${new Date().toISOString().split('T')[0]}`;
+        setCurrentTraceName(traceName);
+
+        // Auto-index the trace for RAG
+        indexTraceInBackground(traceId, traceName);
       } else {
         setError(response.error || 'Failed to load trace data');
         clearTraceView();
+        setCurrentTraceName("");
       }
     } catch (err) {
       console.error('Error loading trace:', err);
       setError(err.message || 'Failed to load trace');
       clearTraceView();
+      setCurrentTraceName("");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const indexTraceInBackground = async (traceId, traceName) => {
+    try {
+      console.log(`Auto-indexing trace '${traceName}' for RAG...`);
+      const response = await fetch(`http://localhost:8000/api/traces/${traceId}/index`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ trace_name: traceName }),
+      });
+
+      const result = await response.json();
+      if (result.success) {
+        console.log(`Successfully indexed ${result.num_nodes} nodes for trace '${traceName}'`);
+      } else {
+        console.error('Failed to index trace:', result.error);
+      }
+    } catch (err) {
+      console.error('Error indexing trace:', err);
+      // Don't show error to user - this is a background operation
     }
   };
 
@@ -109,6 +146,77 @@ const TraceVisualizer = () => {
 
     setSelectedTraceId(traceId);
     loadTrace(traceId);
+  };
+
+  const handleCalculateGrounding = async () => {
+    if (nodes.length === 0) {
+      setError('No trace loaded. Please select a trace first.');
+      return;
+    }
+
+    setIsCalculatingGrounding(true);
+    setError(null);
+
+    try {
+      // Convert nodes to plain data format for API
+      const nodesData = Array.from(runMap.values());
+
+      const response = await fetch('http://localhost:8000/api/grounding', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ nodes: nodesData }),
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        setGroundingScores(result.scores);
+
+        // Helper function to map grounding score (1-10) to color (red to green)
+        const getGroundingColor = (score) => {
+          if (!score) return null;
+          const ratio = (score - 1) / 9; // Normalize to 0-1
+          const r = Math.round(239 - (239 - 16) * ratio);
+          const g = Math.round(68 + (185 - 68) * ratio);
+          const b = Math.round(68 + (129 - 68) * ratio);
+          return `rgb(${r}, ${g}, ${b})`;
+        };
+
+        // Update node styles with grounding scores and reasoning
+        setNodes(nodes.map(node => {
+          const groundingData = result.scores[node.id];
+          const score = groundingData?.score;
+          const reasoning = groundingData?.reasoning;
+          const groundingColor = score ? getGroundingColor(score) : null;
+
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              groundingScore: score,
+              groundingReasoning: reasoning
+            },
+            style: {
+              ...node.style,
+              border: groundingColor
+                ? `8px solid ${groundingColor}`
+                : node.data.error
+                  ? "3px solid #EF4444"
+                  : "2px solid #E5E7EB"
+            }
+          };
+        }));
+      } else {
+        setError(result.error || 'Failed to calculate grounding scores');
+      }
+    } catch (err) {
+      console.error('Error calculating grounding:', err);
+      setError(err.message || 'Failed to calculate grounding scores');
+    } finally {
+      setIsCalculatingGrounding(false);
+    }
   };
 
   return (
@@ -198,6 +306,24 @@ const TraceVisualizer = () => {
           >
             {loading ? '🔄 Loading...' : '🔄 Refresh'}
           </button>
+
+          <button
+            onClick={handleCalculateGrounding}
+            disabled={isCalculatingGrounding || nodes.length === 0}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: '#10B981',
+              color: 'white',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: isCalculatingGrounding || nodes.length === 0 ? 'not-allowed' : 'pointer',
+              fontSize: '14px',
+              fontWeight: '500',
+              opacity: isCalculatingGrounding || nodes.length === 0 ? 0.6 : 1
+            }}
+          >
+            {isCalculatingGrounding ? '⚙️ Calculating...' : '📊 Calculate Grounding'}
+          </button>
         </div>
       </div>
 
@@ -285,9 +411,10 @@ const TraceVisualizer = () => {
         onClose={() => setIsChatOpen(false)}
         nodes={nodes}
         runMap={runMap}
+        traceName={currentTraceName}
       />
 
-      {/* Legend */}
+      {/* Node Type Legend */}
       <div style={{
         position: 'absolute',
         bottom: '20px',
@@ -299,7 +426,7 @@ const TraceVisualizer = () => {
         fontSize: '12px',
         zIndex: 5
       }}>
-        <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>Legend</div>
+        <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>Node Types</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <div style={{ width: '20px', height: '20px', backgroundColor: '#3B82F6', borderRadius: '4px' }} />
@@ -319,6 +446,51 @@ const TraceVisualizer = () => {
           </div>
         </div>
       </div>
+
+      {/* Grounding Score Legend */}
+      {Object.keys(groundingScores).length > 0 && (
+        <div style={{
+          position: 'absolute',
+          top: '50%',
+          left: '20px',
+          transform: 'translateY(-50%)',
+          backgroundColor: 'white',
+          padding: '12px',
+          borderRadius: '8px',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+          fontSize: '12px',
+          zIndex: 5
+        }}>
+          <div style={{ fontWeight: 'bold', marginBottom: '8px', textAlign: 'center' }}>Grounding Score</div>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+            {/* Score label at top */}
+            <div style={{ fontSize: '11px', fontWeight: '600', color: '#10B981' }}>10</div>
+
+            {/* Gradient bar */}
+            <div style={{
+              width: '30px',
+              height: '150px',
+              background: 'linear-gradient(to bottom, rgb(16, 185, 129) 0%, rgb(239, 68, 68) 100%)',
+              borderRadius: '4px',
+              border: '1px solid #D1D5DB'
+            }} />
+
+            {/* Score label at bottom */}
+            <div style={{ fontSize: '11px', fontWeight: '600', color: '#EF4444' }}>1</div>
+
+            {/* Description */}
+            <div style={{
+              fontSize: '10px',
+              color: '#6B7280',
+              marginTop: '4px',
+              textAlign: 'center',
+              maxWidth: '100px'
+            }}>
+              How grounded LLM responses are in tool outputs
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

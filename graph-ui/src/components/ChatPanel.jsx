@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
 
-const ChatPanel = ({ isOpen, onClose, nodes, runMap }) => {
+const ChatPanel = ({ isOpen, onClose, nodes, runMap, traceName }) => {
   const [messages, setMessages] = useState([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -66,9 +66,24 @@ const ChatPanel = ({ isOpen, onClose, nodes, runMap }) => {
   };
 
   // Filter nodes based on mention search
-  const filteredNodes = nodes.filter(node =>
+  // Include @global as a special option
+  const globalOption = {
+    id: 'global',
+    data: {
+      name: 'global',
+      runType: 'context',
+      path: 'Use RAG to retrieve relevant context from entire trace'
+    }
+  };
+
+  let filteredNodes = nodes.filter(node =>
     node.data.name.toLowerCase().includes(mentionSearch.toLowerCase())
   );
+
+  // Add @global option if it matches the search
+  if ('global'.includes(mentionSearch.toLowerCase())) {
+    filteredNodes = [globalOption, ...filteredNodes];
+  }
 
   // Handle input change
   const handleInputChange = (e) => {
@@ -179,7 +194,8 @@ const ChatPanel = ({ isOpen, onClose, nodes, runMap }) => {
       // Send to backend
       const response = await axios.post('http://localhost:8000/api/chat', {
         message: userMessage + nodeContext,
-        history: messages.map(m => ({ role: m.role, content: m.content }))
+        history: messages.map(m => ({ role: m.role, content: m.content })),
+        trace_name: traceName || ""
       });
 
       // Add assistant response

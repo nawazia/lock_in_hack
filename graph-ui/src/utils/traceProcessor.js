@@ -37,7 +37,7 @@ const calculateNodeSize = (run) => {
   const width = baseSize + latencyFactor * 5 + tokenFactor * 3;
   const height = 120 + latencyFactor * 2;
 
-  return { width: 250, height: 150 };
+  return { width: 200, height: 150 }; // Reduced width by 20% (250 -> 200)
 };
 
 /**
@@ -217,19 +217,43 @@ const treeToFlowGraph = (rootRuns, runMap) => {
   const nodes = [];
   const edges = [];
 
-  let yOffset = 0;
-  const levelSpacing = 300;
-  const nodeSpacing = 10;
+  const levelSpacing = 180; // Vertical spacing between levels (parent to child)
+  const siblingSpacing = 300; // Horizontal spacing between siblings (increased from 250)
 
-  const processNode = (node, level = 0, xOffset = 0, parentId = null) => {
+  // First pass: calculate subtree widths for each node
+  const calculateSubtreeWidth = (node) => {
+    if (node.children.length === 0) {
+      node.subtreeWidth = 1;
+      return 1;
+    }
+
+    let totalWidth = 0;
+    node.children.forEach(child => {
+      totalWidth += calculateSubtreeWidth(child);
+    });
+
+    node.subtreeWidth = Math.max(1, totalWidth);
+    return node.subtreeWidth;
+  };
+
+  // Calculate widths for all trees
+  rootRuns.forEach(root => calculateSubtreeWidth(root));
+
+  // Second pass: assign positions based on tree structure
+  const processNode = (node, level = 0, leftBound = 0, parentId = null) => {
     const size = calculateNodeSize(node);
     const color = getNodeColor(node);
+
+    // Calculate x position: center of the subtree
+    const myWidth = node.subtreeWidth * siblingSpacing;
+    const x = leftBound + myWidth / 2 - size.width / 2;
+    const y = level * levelSpacing;
 
     // Create React Flow node
     const flowNode = {
       id: node.id,
       type: "custom",
-      position: { x: level * levelSpacing, y: yOffset },
+      position: { x, y },
       data: {
         ...node,
         color: color,
@@ -262,18 +286,19 @@ const treeToFlowGraph = (rootRuns, runMap) => {
       });
     }
 
-    // Process children
-    node.children.forEach((child, i) => {
-      processNode(child, level + 1, xOffset, node.id);
-      if (node.children.length > 1) {
-        yOffset += size.height + nodeSpacing;
-      }
+    // Process children - distribute them horizontally
+    let childLeftBound = leftBound;
+    node.children.forEach((child) => {
+      processNode(child, level + 1, childLeftBound, node.id);
+      childLeftBound += child.subtreeWidth * siblingSpacing;
     });
   };
 
-  // Process all root nodes
+  // Process all root nodes - space them horizontally
+  let currentX = 0;
   rootRuns.forEach((root) => {
-    processNode(root, 0, 0, null);
+    processNode(root, 0, currentX, null);
+    currentX += root.subtreeWidth * siblingSpacing;
   });
 
   return { nodes, edges };

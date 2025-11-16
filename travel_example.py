@@ -116,6 +116,7 @@ def main():
             I want to travel for 1 week during Christmas.
             I'm interested in food, culture, and nightlife.
             I want to visit popular spots like Victoria Peak and Tsim Sha Tsui, and stay in a 4/5-star hotel near Central.
+            I want to optimize for cost.
             """
             print(user_response)
             print()

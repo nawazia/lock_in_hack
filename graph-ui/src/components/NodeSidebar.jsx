@@ -19,7 +19,9 @@ const NodeSidebar = ({ node, onClose }) => {
     totalTokens,
     promptTokens,
     completionTokens,
-    feedbackStats
+    feedbackStats,
+    groundingScore,
+    groundingReasoning
   } = node.data;
 
   const formatJson = (obj) => {
@@ -116,6 +118,31 @@ const NodeSidebar = ({ node, onClose }) => {
           {totalTokens > 0 && <InfoRow label="Total Tokens" value={totalTokens.toLocaleString()} />}
           {promptTokens > 0 && <InfoRow label="Prompt Tokens" value={promptTokens.toLocaleString()} />}
           {completionTokens > 0 && <InfoRow label="Completion Tokens" value={completionTokens.toLocaleString()} />}
+        </Section>
+      )}
+
+      {/* Grounding Analysis */}
+      {groundingScore && groundingReasoning && (
+        <Section title="Grounding Analysis">
+          <InfoRow label="Grounding Score" value={`${groundingScore}/10`} />
+          <div style={{ marginTop: '8px' }}>
+            <div style={{ fontSize: '11px', color: '#6B7280', marginBottom: '4px' }}>
+              Reasoning
+            </div>
+            <div style={{
+              padding: '10px',
+              backgroundColor: '#F0FDF4',
+              border: '1px solid #86EFAC',
+              borderRadius: '6px',
+              fontSize: '13px',
+              color: '#166534',
+              lineHeight: '1.5',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word'
+            }}>
+              {groundingReasoning}
+            </div>
+          </div>
         </Section>
       )}
 

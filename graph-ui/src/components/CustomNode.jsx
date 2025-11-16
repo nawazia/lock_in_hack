@@ -2,7 +2,25 @@ import React from 'react';
 import { Handle, Position } from 'reactflow';
 
 const CustomNode = ({ data, selected }) => {
-  const { name, runType, latencyFormatted, totalTokens, error, isCollapsed, collapsedCount, collapsedNodes, modelName } = data;
+  const { name, runType, latencyFormatted, totalTokens, error, isCollapsed, collapsedCount, collapsedNodes, modelName, groundingScore } = data;
+
+  // Map grounding score (1-10) to color (red to green)
+  const getGroundingColor = (score) => {
+    if (!score) return null;
+
+    // Interpolate between red (1) and green (10)
+    // Red: rgb(239, 68, 68) - #EF4444
+    // Green: rgb(16, 185, 129) - #10B981
+    const ratio = (score - 1) / 9; // Normalize to 0-1
+
+    const r = Math.round(239 - (239 - 16) * ratio);
+    const g = Math.round(68 + (185 - 68) * ratio);
+    const b = Math.round(68 + (129 - 68) * ratio);
+
+    return `rgb(${r}, ${g}, ${b})`;
+  };
+
+  const groundingColor = groundingScore ? getGroundingColor(groundingScore) : null;
 
   // Icon based on run type
   const getIcon = () => {
@@ -37,7 +55,7 @@ const CustomNode = ({ data, selected }) => {
     >
       <Handle
         type="target"
-        position={Position.Left}
+        position={Position.Top}
         style={{ background: '#555' }}
       />
 
@@ -45,7 +63,7 @@ const CustomNode = ({ data, selected }) => {
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
         <span style={{ fontSize: '18px' }}>{getIcon()}</span>
         <span style={{
-          fontSize: '15px',
+          fontSize: '18px', // Increased by 20% (15px -> 18px)
           fontWeight: '600',
           flex: 1,
           overflow: 'hidden',
@@ -129,7 +147,7 @@ const CustomNode = ({ data, selected }) => {
 
       <Handle
         type="source"
-        position={Position.Right}
+        position={Position.Bottom}
         style={{ background: '#555' }}
       />
     </div>
