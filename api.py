@@ -197,11 +197,11 @@ def get_traces():
     try:
         project_name = os.getenv("LANGCHAIN_PROJECT", "lock-in-hack-multi-agent")
 
-        # Fetch runs from LangSmith
+        # Fetch runs from LangSmith (ordered by most recent first by default)
         runs = list(
             langsmith_client.list_runs(
                 project_name=project_name,
-                limit=50,
+                limit=100,  # Get more to ensure we find enough root runs
             )
         )
 
@@ -229,32 +229,24 @@ def get_traces():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@app.route("/api/traces/<run_id>", methods=["GET"])
-def get_trace_details(run_id):
-    """
-    Get detailed trace data for a specific run.
+def _fetch_trace_tree(run_id):
+    """Helper function to fetch a complete trace tree with all descendants."""
+    runs_data = []
+    visited = set()  # to avoid cycles / repeated runs
 
-    Response:
-    {
-        "success": true,
-        "trace": {
-            "run_id": "...",
-            "runs": [...]
-        }
-    }
-    """
-    if not langsmith_client:
-        return (
-            jsonify({"success": False, "error": "LangSmith client not initialized"}),
-            503,
-        )
+    def fetch_run_tree_recursive(current_run_id):
+        cid = str(current_run_id)
+        if cid in visited:
+            return
+        visited.add(cid)
 
-    try:
-        # Get the root run and all its descendants
-        runs_data = []
+        try:
+            run = langsmith_client.read_run(current_run_id)
 
-        def fetch_run_tree(run_id):
-            run = langsmith_client.read_run(run_id)
+            # Calculate latency if we have start and end times
+            latency = None
+            if run.start_time and run.end_time:
+                latency = (run.end_time - run.start_time).total_seconds()
 
             # Convert run to dict with all necessary fields
             run_dict = {
@@ -263,50 +255,40 @@ def get_trace_details(run_id):
                 "run_type": run.run_type,
                 "start_time": run.start_time.isoformat() if run.start_time else None,
                 "end_time": run.end_time.isoformat() if run.end_time else None,
+                "latency": latency,
                 "inputs": run.inputs,
                 "outputs": run.outputs,
                 "error": run.error,
-                "tags": run.tags,
-                "extra": run.extra,
+                "tags": run.tags or [],
+                "metadata": run.extra.get("metadata", {}) if run.extra else {},
                 "parent_run_id": str(run.parent_run_id) if run.parent_run_id else None,
                 "child_run_ids": [str(cid) for cid in (run.child_run_ids or [])],
-                "feedback_stats": run.feedback_stats,
+                "feedback_stats": run.feedback_stats or {},
                 "total_tokens": getattr(run, "total_tokens", None),
                 "prompt_tokens": getattr(run, "prompt_tokens", None),
                 "completion_tokens": getattr(run, "completion_tokens", None),
-                "events": getattr(run, "events", []),
+                "status": "error" if run.error else "success",
             }
-
+            print(run_dict["name"], run_dict["run_type"])
             runs_data.append(run_dict)
 
             # Recursively fetch children
             if run.child_run_ids:
                 for child_id in run.child_run_ids:
-                    fetch_run_tree(child_id)
+                    fetch_run_tree_recursive(child_id)
 
-        fetch_run_tree(run_id)
+        except Exception as e:
+            logger.error(f"Error fetching run {current_run_id}: {e}")
+            # Continue with other runs even if one fails
+            pass
 
-        return (
-            jsonify({"success": True, "trace": {"run_id": run_id, "runs": runs_data}}),
-            200,
-        )
-
-    except Exception as e:
-        logger.error(f"Error fetching trace details: {e}", exc_info=True)
-        return jsonify({"success": False, "error": str(e)}), 500
+    fetch_run_tree_recursive(run_id)
+    return runs_data
 
 
 @app.route("/api/traces/latest", methods=["GET"])
 def get_latest_trace():
-    """
-    Get the most recent trace.
-
-    Response:
-    {
-        "success": true,
-        "trace": {...}
-    }
-    """
+    """Get the most recent trace with full tree expanded."""
     if not langsmith_client:
         return (
             jsonify({"success": False, "error": "LangSmith client not initialized"}),
@@ -316,23 +298,80 @@ def get_latest_trace():
     try:
         project_name = os.getenv("LANGCHAIN_PROJECT", "lock-in-hack-multi-agent")
 
-        # Get most recent root run
-        runs = list(
+        print("getting latest trace")
+
+        # Get recent runs - default order is descending by start_time (most recent first)
+        all_runs = list(
             langsmith_client.list_runs(
-                project_name=project_name, limit=1, filter="eq(parent_run_id, null)"
+                project_name=project_name,
+                limit=100,  # Fetch enough to find a root run
+                # Don't use order parameter - defaults to desc by start_time
             )
         )
 
-        if not runs:
+        if not all_runs:
+            logger.warning("No runs found in project")
             return jsonify({"success": False, "error": "No traces found"}), 404
 
-        latest_run_id = str(runs[0].id)
+        # Find the first run that has no parent (root run)
+        root_run = None
+        for run in all_runs:
+            if run.parent_run_id is None:
+                root_run = run
+                break
 
-        # Reuse the trace details endpoint logic
-        return get_trace_details(latest_run_id)
+        if not root_run:
+            logger.warning("No root runs found among fetched runs")
+            return jsonify({"success": False, "error": "No root traces found"}), 404
+
+        latest_run_id = str(root_run.id)
+        logger.info(f"Found latest root run: {root_run.name} (ID: {latest_run_id})")
+
+        # Fetch the complete trace tree
+        runs_data = _fetch_trace_tree(latest_run_id)
+        logger.info(f"Fetched {len(runs_data)} runs in trace tree")
+
+        # Build hierarchical structure for easier visualization
+        trace_response = {
+            "run_id": latest_run_id,
+            "runs": runs_data,
+            "total_runs": len(runs_data),
+        }
+
+        return jsonify({"success": True, "trace": trace_response}), 200
 
     except Exception as e:
         logger.error(f"Error fetching latest trace: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/traces/<run_id>", methods=["GET"])
+def get_trace_details(run_id):
+    """Get detailed trace data for a specific run with full tree expanded."""
+    if not langsmith_client:
+        return (
+            jsonify({"success": False, "error": "LangSmith client not initialized"}),
+            503,
+        )
+
+    try:
+        logger.info(f"Fetching trace details for run: {run_id}")
+        print("getting trace details for run id:", run_id)
+        # Fetch the complete trace tree
+        runs_data = _fetch_trace_tree(run_id)
+
+        logger.info(f"Successfully fetched {len(runs_data)} runs in trace tree")
+
+        trace_response = {
+            "run_id": run_id,
+            "runs": runs_data,
+            "total_runs": len(runs_data),
+        }
+
+        return jsonify({"success": True, "trace": trace_response}), 200
+
+    except Exception as e:
+        logger.error(f"Error fetching trace details: {e}", exc_info=True)
         return jsonify({"success": False, "error": str(e)}), 500
 
 
@@ -348,8 +387,8 @@ def index():
                     "POST /api/query": "Process a news query",
                     "GET /api/stats": "Get RAG storage statistics",
                     "GET /api/traces": "List available traces",
-                    "GET /api/traces/<run_id>": "Get trace details",
                     "GET /api/traces/latest": "Get latest trace",
+                    "GET /api/traces/<run_id>": "Get trace details",
                     "GET /health": "Health check",
                 },
                 "langsmith": {
