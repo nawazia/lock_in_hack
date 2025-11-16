@@ -1,10 +1,14 @@
 """Itinerary Agent - Creates detailed day-by-day travel itineraries."""
 
 import logging
+import os
+import json
 from typing import List, Optional
 from datetime import datetime, timedelta
 from langsmith import traceable
 
+from config.llm_setup import get_llm
+from config.hallbayes_validator import EDFLValidator
 from models.travel_schemas import (
     TravelPlanningState,
     Itinerary,
@@ -19,9 +23,28 @@ logger = logging.getLogger(__name__)
 class ItineraryAgent:
     """Agent responsible for creating detailed day-by-day itineraries."""
 
-    def __init__(self):
-        """Initialize the itinerary agent."""
-        pass
+    def __init__(self, llm=None, enable_edfl_validation=None):
+        """Initialize the itinerary agent.
+
+        Args:
+            llm: Language model to use. If None, uses default from config.
+            enable_edfl_validation: Enable EDFL validation. If None, reads from env ENABLE_EDFL_VALIDATION.
+        """
+        self.llm = llm or get_llm()
+
+        # Initialize EDFL validator
+        if enable_edfl_validation is None:
+            enable_edfl_validation = os.getenv("ENABLE_EDFL_VALIDATION", "true").lower() == "true"
+
+        try:
+            self.edfl_validator = EDFLValidator(
+                self.llm,
+                h_star=0.05,  # Target 5% hallucination rate
+                enable_validation=enable_edfl_validation
+            )
+        except Exception as e:
+            logger.warning(f"Failed to initialize EDFL validator: {e}")
+            self.edfl_validator = None
 
     def parse_start_date(self, timeframe: Optional[str]) -> datetime:
         """Parse start date from timeframe string.
@@ -249,6 +272,53 @@ class ItineraryAgent:
             )
 
             logger.info(f"Created itinerary: {itinerary.title}")
+
+            # Validate itinerary consistency with EDFL (closed-book validation)
+            if self.edfl_validator:
+                try:
+                    # Create a summary for validation
+                    summary = {
+                        "title": itinerary.title,
+                        "destination": destination,
+                        "dates": f"{itinerary.start_date} to {itinerary.end_date}",
+                        "total_days": total_days,
+                        "nights": nights,
+                        "hotel": budget_option.hotel.name,
+                        "hotel_location": budget_option.hotel.location,
+                        "flight": f"{budget_option.flight_outbound.airline} {budget_option.flight_outbound.flight_number}",
+                        "departure_time": budget_option.flight_outbound.departure_time,
+                        "arrival_time": budget_option.flight_outbound.arrival_time,
+                        "num_activities": len(activities),
+                        "total_cost": total_estimated_cost
+                    }
+
+                    should_use, risk_bound, rationale = self.edfl_validator.validate_closed_book(
+                        question=f"Review this {total_days}-day travel itinerary for {destination}. Is it internally consistent (dates align, locations match, logistics are feasible)?",
+                        llm_output=json.dumps(summary, indent=2)
+                    )
+
+                    # Store EDFL metrics in itinerary metadata
+                    itinerary.edfl_validation = {
+                        "risk_of_hallucination": risk_bound,
+                        "validation_passed": should_use,
+                        "confidence": "high" if risk_bound < 0.05 else ("medium" if risk_bound < 0.5 else "low"),
+                        "rationale": rationale[:200]
+                    }
+
+                    if not should_use:
+                        logger.warning(f"EDFL validation flagged itinerary inconsistency (RoH={risk_bound:.3f})")
+                        logger.warning(f"Rationale: {rationale}")
+                        # Note: We don't reject the itinerary, but flag it in metadata for review
+                        # The audit agent will handle fixing issues
+                    else:
+                        logger.info(f"EDFL validation PASSED for itinerary (RoH={risk_bound:.3f})")
+
+                except Exception as e:
+                    logger.error(f"EDFL validation error for itinerary: {e}")
+                    itinerary.edfl_validation = {
+                        "error": str(e)
+                    }
+
             return itinerary
 
         except Exception as e:
@@ -288,6 +358,11 @@ class ItineraryAgent:
         state.completed_agents.append("itinerary")
         state.metadata["itinerary_created"] = True
 
-        logger.info(f"Itinerary agent completed. Created: {itinerary.title}")
+        # Add EDFL validation metrics to state metadata
+        if hasattr(itinerary, 'edfl_validation') and itinerary.edfl_validation:
+            state.metadata["itinerary_edfl_validation"] = itinerary.edfl_validation
+            logger.info(f"Itinerary agent completed. Created: {itinerary.title}. EDFL: {'PASS' if itinerary.edfl_validation.get('validation_passed') else 'FAIL'} (RoH={itinerary.edfl_validation.get('risk_of_hallucination', 'N/A')})")
+        else:
+            logger.info(f"Itinerary agent completed. Created: {itinerary.title}")
 
         return state

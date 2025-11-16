@@ -2,11 +2,13 @@
 
 import logging
 import json
+import os
 from typing import List
 from langsmith import traceable
 from langchain_core.prompts import ChatPromptTemplate
 
 from config.llm_setup import get_llm
+from config.hallbayes_validator import EDFLValidator
 from models.travel_schemas import TravelPlanningState, Flight
 from tools.travel_tools import search_flights
 
@@ -16,14 +18,29 @@ logger = logging.getLogger(__name__)
 class FlightAgent:
     """Agent responsible for finding and processing flight options."""
 
-    def __init__(self, llm=None):
+    def __init__(self, llm=None, enable_edfl_validation=None):
         """Initialize the flight agent.
 
         Args:
             llm: Language model to use. If None, uses default from config.
+            enable_edfl_validation: Enable EDFL validation. If None, reads from env ENABLE_EDFL_VALIDATION.
         """
         self.llm = llm or get_llm()
         self.search_tool = search_flights
+
+        # Initialize EDFL validator
+        if enable_edfl_validation is None:
+            enable_edfl_validation = os.getenv("ENABLE_EDFL_VALIDATION", "true").lower() == "true"
+
+        try:
+            self.edfl_validator = EDFLValidator(
+                self.llm,
+                h_star=0.05,  # Target 5% hallucination rate
+                enable_validation=enable_edfl_validation
+            )
+        except Exception as e:
+            logger.warning(f"Failed to initialize EDFL validator: {e}")
+            self.edfl_validator = None
 
     @traceable(name="search_and_parse_flights")
     def search_and_parse_flights(
@@ -210,6 +227,54 @@ Extract flight information as JSON array.""")
                     logger.warning(f"Could not create Flight object: {e}")
                     continue
 
+            # Validate extracted flights with EDFL
+            edfl_metrics = None
+            if self.edfl_validator and flights:
+                try:
+                    should_use, risk_bound, rationale, valid_count = self.edfl_validator.validate_extraction_batch(
+                        task_description="Extract flight information from search results. Verify all prices, times, and airlines are accurately extracted.",
+                        evidence=formatted_results,
+                        extracted_items=flights,
+                        item_type="flights"
+                    )
+
+                    # Store EDFL metrics for each flight
+                    edfl_metrics = {
+                        "edfl_decision": "PASS" if should_use else "FAIL",
+                        "edfl_risk_bound": risk_bound,
+                        "edfl_valid_count": valid_count,
+                        "edfl_total_count": len(flights),
+                        "edfl_rationale": rationale[:200]  # Truncate for readability
+                    }
+
+                    # Add EDFL metadata to each flight
+                    for flight in flights:
+                        flight.edfl_validation = {
+                            "risk_of_hallucination": risk_bound,
+                            "validation_passed": should_use,
+                            "confidence": "high" if risk_bound < 0.05 else ("medium" if risk_bound < 0.5 else "low")
+                        }
+
+                    if not should_use:
+                        logger.warning(f"EDFL validation FLAGGED flights (RoH={risk_bound:.3f}) - returning anyway")
+                        logger.warning(f"Rationale: {rationale}")
+                        # Note: We flag but don't block - EDFL is for monitoring/confidence, not hard rejection
+                    else:
+                        logger.info(f"EDFL validation PASSED for {valid_count} flights (RoH={risk_bound:.3f})")
+
+                except Exception as e:
+                    logger.error(f"EDFL validation error (continuing anyway): {e}")
+                    edfl_metrics = {
+                        "edfl_decision": "ERROR",
+                        "edfl_error": str(e)
+                    }
+
+            # Store EDFL metrics for later retrieval
+            if edfl_metrics and hasattr(self, '_last_edfl_metrics'):
+                self._last_edfl_metrics = edfl_metrics
+            elif edfl_metrics:
+                self._last_edfl_metrics = edfl_metrics
+
             return flights
 
         except Exception as e:
@@ -275,6 +340,11 @@ Extract flight information as JSON array.""")
         state.completed_agents.append("flight")
         state.metadata["flights_found"] = len(all_flights)
 
-        logger.info(f"Flight agent completed. Found {len(all_flights)} flights")
+        # Add EDFL validation metrics to state metadata
+        if hasattr(self, '_last_edfl_metrics') and self._last_edfl_metrics:
+            state.metadata["flight_edfl_validation"] = self._last_edfl_metrics
+            logger.info(f"Flight agent completed. Found {len(all_flights)} flights. EDFL: {self._last_edfl_metrics.get('edfl_decision', 'N/A')} (RoH={self._last_edfl_metrics.get('edfl_risk_bound', 'N/A')})")
+        else:
+            logger.info(f"Flight agent completed. Found {len(all_flights)} flights")
 
         return state

@@ -2,12 +2,14 @@
 
 import logging
 import json
+import os
 from typing import List
 from datetime import datetime, timedelta
 from langsmith import traceable
 from langchain_core.prompts import ChatPromptTemplate
 
 from config.llm_setup import get_llm
+from config.hallbayes_validator import EDFLValidator
 from models.travel_schemas import TravelPlanningState, Hotel
 from tools.travel_tools import search_hotels
 
@@ -17,14 +19,29 @@ logger = logging.getLogger(__name__)
 class HotelAgent:
     """Agent responsible for finding and processing hotel options."""
 
-    def __init__(self, llm=None):
+    def __init__(self, llm=None, enable_edfl_validation=None):
         """Initialize the hotel agent.
 
         Args:
             llm: Language model to use. If None, uses default from config.
+            enable_edfl_validation: Enable EDFL validation. If None, reads from env ENABLE_EDFL_VALIDATION.
         """
         self.llm = llm or get_llm()
         self.search_tool = search_hotels
+
+        # Initialize EDFL validator
+        if enable_edfl_validation is None:
+            enable_edfl_validation = os.getenv("ENABLE_EDFL_VALIDATION", "true").lower() == "true"
+
+        try:
+            self.edfl_validator = EDFLValidator(
+                self.llm,
+                h_star=0.05,  # Target 5% hallucination rate
+                enable_validation=enable_edfl_validation
+            )
+        except Exception as e:
+            logger.warning(f"Failed to initialize EDFL validator: {e}")
+            self.edfl_validator = None
 
     @traceable(name="search_and_parse_hotels")
     def search_and_parse_hotels(
@@ -210,6 +227,52 @@ Extract hotel information as JSON array.""")
                     logger.debug(f"Hotel data was: {hotel_data}")
                     continue
 
+            # Validate extracted hotels with EDFL
+            edfl_metrics = None
+            if self.edfl_validator and hotels:
+                try:
+                    should_use, risk_bound, rationale, valid_count = self.edfl_validator.validate_extraction_batch(
+                        task_description="Extract hotel information from search results. Verify all prices, names, ratings, and locations are accurately extracted.",
+                        evidence=formatted_results,
+                        extracted_items=hotels,
+                        item_type="hotels"
+                    )
+
+                    # Store EDFL metrics
+                    edfl_metrics = {
+                        "edfl_decision": "PASS" if should_use else "FAIL",
+                        "edfl_risk_bound": risk_bound,
+                        "edfl_valid_count": valid_count,
+                        "edfl_total_count": len(hotels),
+                        "edfl_rationale": rationale[:200]
+                    }
+
+                    # Add EDFL metadata to each hotel
+                    for hotel in hotels:
+                        hotel.edfl_validation = {
+                            "risk_of_hallucination": risk_bound,
+                            "validation_passed": should_use,
+                            "confidence": "high" if risk_bound < 0.05 else ("medium" if risk_bound < 0.5 else "low")
+                        }
+
+                    if not should_use:
+                        logger.warning(f"EDFL validation FLAGGED hotels (RoH={risk_bound:.3f}) - returning anyway")
+                        logger.warning(f"Rationale: {rationale}")
+                        # Note: We flag but don't block - EDFL is for monitoring/confidence, not hard rejection
+                    else:
+                        logger.info(f"EDFL validation PASSED for {valid_count} hotels (RoH={risk_bound:.3f})")
+
+                except Exception as e:
+                    logger.error(f"EDFL validation error (continuing anyway): {e}")
+                    edfl_metrics = {
+                        "edfl_decision": "ERROR",
+                        "edfl_error": str(e)
+                    }
+
+            # Store EDFL metrics
+            if edfl_metrics:
+                self._last_edfl_metrics = edfl_metrics
+
             return hotels
 
         except Exception as e:
@@ -287,6 +350,11 @@ Extract hotel information as JSON array.""")
         state.completed_agents.append("hotel")
         state.metadata["hotels_found"] = len(all_hotels)
 
-        logger.info(f"Hotel agent completed. Found {len(all_hotels)} hotels")
+        # Add EDFL validation metrics to state metadata
+        if hasattr(self, '_last_edfl_metrics') and self._last_edfl_metrics:
+            state.metadata["hotel_edfl_validation"] = self._last_edfl_metrics
+            logger.info(f"Hotel agent completed. Found {len(all_hotels)} hotels. EDFL: {self._last_edfl_metrics.get('edfl_decision', 'N/A')} (RoH={self._last_edfl_metrics.get('edfl_risk_bound', 'N/A')})")
+        else:
+            logger.info(f"Hotel agent completed. Found {len(all_hotels)} hotels")
 
         return state

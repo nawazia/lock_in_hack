@@ -43,6 +43,7 @@ class Flight(BaseModel):
     currency: str = "USD"
     stops: int = 0
     booking_url: Optional[str] = None
+    edfl_validation: Optional[Dict[str, Any]] = Field(None, description="EDFL hallucination detection metrics")
 
     class Config:
         json_schema_extra = {
@@ -73,6 +74,7 @@ class Hotel(BaseModel):
     distance_to_center: Optional[str] = None
     rating: Optional[float] = None  # User rating (e.g., 4.5/5)
     booking_url: Optional[str] = None
+    edfl_validation: Optional[Dict[str, Any]] = Field(None, description="EDFL hallucination detection metrics")
 
     class Config:
         json_schema_extra = {
@@ -182,6 +184,7 @@ class Itinerary(BaseModel):
     total_estimated_cost: float
     packing_suggestions: List[str] = Field(default_factory=list)
     travel_tips: List[str] = Field(default_factory=list)
+    edfl_validation: Optional[Dict[str, Any]] = Field(None, description="EDFL hallucination detection metrics")
 
     class Config:
         json_schema_extra = {
