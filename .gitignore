@@ -73,6 +73,9 @@ chroma_db/
 venv/
 templates/poster_templates/venv/
 
+# UI
+graph-ui/node_modules/
+
 # Office temporary files
 ~$*.pptx
 ~$*.docx
