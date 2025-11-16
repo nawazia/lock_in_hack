@@ -75,6 +75,7 @@ templates/poster_templates/venv/
 
 # UI
 graph-ui/node_modules/
+graph-ui/.vite/
 
 # Office temporary files
 ~$*.pptx

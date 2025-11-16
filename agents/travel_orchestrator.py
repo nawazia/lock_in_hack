@@ -260,6 +260,7 @@ class TravelOrchestrator:
         workflow.add_node("activities", self._activities_node)
         workflow.add_node("ranking", self._ranking_node)
         workflow.add_node("itinerary", self._itinerary_node)
+        workflow.add_node("error_injection", self._error_injection_node)  # Demo/testing node
         workflow.add_node("audit", self._audit_node)
 
         # Define the workflow pipeline with conditional routing
@@ -293,8 +294,11 @@ class TravelOrchestrator:
         # After ranking, create itinerary
         workflow.add_edge("ranking", "itinerary")
 
-        # After itinerary, audit for errors
-        workflow.add_edge("itinerary", "audit")
+        # After itinerary, optionally inject errors (for demo/testing)
+        workflow.add_edge("itinerary", "error_injection")
+
+        # After error injection (or skip if disabled), audit for errors
+        workflow.add_edge("error_injection", "audit")
 
         # After audit, use conditional routing
         # If critical issues found -> route back to appropriate agent
@@ -434,6 +438,101 @@ class TravelOrchestrator:
             logger.error(f"Error in itinerary node: {e}")
             state["completed_agents"] = state.get("completed_agents", []) + ["itinerary"]
             return state
+
+    @traceable(name="error_injection_node")
+    def _error_injection_node(self, state: Dict) -> Dict:
+        """Optional node to inject errors for demo/testing purposes."""
+        import os
+        from datetime import timedelta
+
+        # Only inject errors if DEMO_ERRORS environment variable is set
+        if not os.getenv("DEMO_ERRORS", "").lower() in ["true", "1", "yes"]:
+            logger.info("Error injection disabled (DEMO_ERRORS not set)")
+            return state
+
+        # Only inject errors on the FIRST iteration (not on feedback loop iterations)
+        iteration_count = state.get("iteration_count", 0)
+        if iteration_count > 0:
+            logger.info(f"Error injection skipped (iteration {iteration_count} - errors only injected on first pass)")
+            return state
+
+        # Check if errors were already injected
+        if state.get("metadata", {}).get("errors_injected"):
+            logger.info("Error injection skipped (errors already injected)")
+            return state
+
+        logger.warning("=" * 80)
+        logger.warning("🔧 DEMO MODE: Injecting intentional errors for testing...")
+        logger.warning("=" * 80)
+
+        if not state.get("final_itinerary"):
+            logger.warning("No itinerary to inject errors into")
+            return state
+
+        itinerary = state["final_itinerary"]
+        errors_injected = []
+
+        try:
+            # Error 1: Mess up the itinerary dates (create date inconsistency)
+            flight = itinerary["budget_option"]["flight_outbound"]
+            arrival_date = flight["arrival_time"].split('T')[0]
+            wrong_start_date = (self._parse_date_str(arrival_date) - timedelta(days=10)).strftime("%Y-%m-%d")
+            wrong_end_date = (self._parse_date_str(arrival_date) - timedelta(days=3)).strftime("%Y-%m-%d")
+
+            itinerary["start_date"] = wrong_start_date
+            itinerary["end_date"] = wrong_end_date
+            errors_injected.append(f"Date inconsistency: Flight arrives {arrival_date} but itinerary starts {wrong_start_date}")
+            logger.warning(f"❌ Injected: {errors_injected[-1]}")
+
+            # Error 2: Invalid hotel rating (out of 5 scale)
+            hotel = itinerary["budget_option"]["hotel"]
+            if hotel.get("rating"):
+                original_rating = hotel["rating"]
+                hotel["rating"] = 12.5
+                errors_injected.append(f"Invalid rating: Hotel rating is {hotel['rating']}/5 (should be max 5.0)")
+                logger.warning(f"❌ Injected: {errors_injected[-1]}")
+
+            # Error 3: Change hotel location to wrong city (location mismatch)
+            original_location = hotel.get("location", "")
+            hotel["location"] = "Singapore"
+            errors_injected.append(f"Location mismatch: Hotel is in Singapore but user requested {original_location}")
+            logger.warning(f"❌ Injected: {errors_injected[-1]}")
+
+            # Error 4: Negative activity price
+            if itinerary.get("daily_plans") and len(itinerary["daily_plans"]) > 1:
+                activities = itinerary["daily_plans"][1].get("activities", [])
+                if activities and len(activities) > 0:
+                    original_price = activities[0].get("price", 0)
+                    activities[0]["price"] = -50.0
+                    errors_injected.append(f"Invalid price: Activity '{activities[0]['name']}' has negative price: $-50.00")
+                    logger.warning(f"❌ Injected: {errors_injected[-1]}")
+
+            # Error 5: Add a blog URL instead of booking URL
+            if hotel.get("booking_url"):
+                original_url = hotel["booking_url"]
+                hotel["booking_url"] = "https://travelblog.com/hong-kong-hotels-guide"
+                errors_injected.append(f"Invalid URL: Hotel booking URL is a blog/guide instead of booking site")
+                logger.warning(f"❌ Injected: {errors_injected[-1]}")
+
+            logger.warning(f"Total errors injected: {len(errors_injected)}")
+            logger.warning("⚠️  These errors will now be detected by the audit agent")
+            logger.warning("=" * 80)
+
+            state["metadata"]["errors_injected"] = errors_injected
+            state["metadata"]["demo_mode"] = True
+
+        except Exception as e:
+            logger.error(f"Failed to inject errors: {e}")
+
+        return state
+
+    def _parse_date_str(self, date_str: str):
+        """Parse date string."""
+        from datetime import datetime
+        try:
+            return datetime.strptime(date_str, "%Y-%m-%d")
+        except:
+            return datetime.now()
 
     @traceable(name="audit_node")
     def _audit_node(self, state: Dict) -> Dict:

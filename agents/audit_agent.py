@@ -269,7 +269,19 @@ class AuditAgent:
         # Check location
         corrected_location, is_valid = self.validate_location(hotel.location, expected_location)
         if not is_valid or corrected_location != hotel.location:
+            old_location = hotel.location
             hotel.location = corrected_location
+            # If we corrected the location, add to fixes and remove from critical issues
+            if old_location != corrected_location:
+                fix_msg = f"Corrected hotel location from '{old_location}' to '{corrected_location}'"
+                self.fixes_applied.append(fix_msg)
+                logger.info(f"Auto-fixed location: {fix_msg}")
+                # Remove location mismatch from critical issues if it was added
+                location_issue = f"Location mismatch: Found '{old_location}' but expected '{expected_location}'"
+                if location_issue in self.critical_issues:
+                    self.critical_issues.remove(location_issue)
+                if "location_mismatch" in self.issue_types:
+                    self.issue_types.remove("location_mismatch")
 
         # Check ratings
         if hotel.rating:
