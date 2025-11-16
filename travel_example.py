@@ -109,7 +109,9 @@ def main():
             print("=" * 80)
 
             # Simulate providing the missing information
+            # NOTE: Must explicitly state "Hong Kong" since landmarks alone aren't enough
             user_response = """
+            I want to go to Hong Kong!
             My budget is around $4000.
             I want to travel for 1 week during Christmas.
             I'm interested in food, culture, and nightlife.
